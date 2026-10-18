@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function() {
+        try {
+          if (window.location.search) {
+            var p = new URLSearchParams(window.location.search);
+            var modified = false;
+            ['__aistudio_auth_token', 'token', 'access_token'].forEach(function(k) {
+              if (p.has(k)) { p.delete(k); modified = true; }
+            });
+            if (modified) {
+              var cleanSearch = p.toString() ? ('?' + p.toString()) : '';
+              window.history.replaceState(null, document.title, window.location.pathname + cleanSearch + window.location.hash);
+            }
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" id="viewport-meta" />
+    <link rel="icon" type="image/png" href="/realtech-logo.png">
+    <link rel="apple-touch-icon" href="/pwa-192x192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Realtech" />
+    <meta name="theme-color" content="#1a1a2e" />
+
+    <title>Realtech Computer - MacBook &amp; Portable Monitor Store in Cambodia</title>
+    <meta name="description" content="Shop MacBooks, portable monitors, laptops, and tech accessories at Realtech Computer Cambodia. Best prices, warranty included, and fast delivery.">
+    <meta name="keywords" content="MacBook, portable monitor, laptop, Arzopa, Intehill, computer store, Cambodia, Phnom Penh, tech accessories, warranty" />
+    <meta name="author" content="Realtech Computer" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://realtechcomputer.com/" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Realtech Computer" />
+    
+    
+    <meta property="og:image" content="https://realtechcomputer.com/realtech-logo.png">
+    <meta property="og:url" content="https://realtechcomputer.com/" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    
+    
+    <meta name="twitter:image" content="https://realtechcomputer.com/realtech-logo.png">
+
+    <!-- JSON-LD Organization -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Store",
+      "name": "Realtech Computer",
+      "description": "MacBook & Portable Monitor Store in Cambodia",
+      "url": "https://realtechcomputer.com",
+      "logo": "https://realtechcomputer.com/realtech-logo.png",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": "https://realtechcomputer.com/?search={search_term_string}",
+        "query-input": "required name=search_term_string"
+      }
+    }
+    </script>
+    <meta property="og:title" content="Realtech Computer - MacBook &amp; Portable Monitor Store in Cambodia">
+  <meta name="twitter:title" content="Realtech Computer - MacBook &amp; Portable Monitor Store in Cambodia">
+  <meta property="og:description" content="Shop MacBooks, portable monitors, laptops, and tech accessories at Realtech Computer Cambodia. Best prices, warranty included, and fast delivery.">
+  <meta name="twitter:description" content="Shop MacBooks, portable monitors, laptops, and tech accessories at Realtech Computer Cambodia. Best prices, warranty included, and fast delivery.">
+    <link rel="preload" as="image" href="/realtech-logo.png">
+
+    <!-- Pre-mount instant styling & theme initialization -->
+    <style id="preloader-styles">
+      :root {
+        --app-bg: #f8fafc;
+        --app-card: #ffffff;
+        --app-text: #0f172a;
+        --app-muted: #64748b;
+        --app-border: #e2e8f0;
+        --app-primary: #0284c7;
+      }
+      .dark {
+        --app-bg: #0b0f19;
+        --app-card: #131b2e;
+        --app-text: #f1f5f9;
+        --app-muted: #94a3b8;
+        --app-border: #1e293b;
+        --app-primary: #38bdf8;
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+        background-color: var(--app-bg);
+        color: var(--app-text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      }
+      #app-preloader {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background-color: var(--app-bg);
+        z-index: 99999;
+        padding: 24px;
+        box-sizing: border-box;
+      }
+      .pre-glow {
+        position: absolute;
+        width: 320px;
+        height: 320px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(2, 132, 199, 0.12) 0%, rgba(2, 132, 199, 0) 70%);
+        pointer-events: none;
+      }
+      .pre-logo-wrapper {
+        position: relative;
+        margin-bottom: 24px;
+      }
+      .pre-ring {
+        position: absolute;
+        inset: -8px;
+        border-radius: 26px;
+        border: 2px solid var(--app-primary);
+        opacity: 0.2;
+        animation: pre-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      }
+      .pre-logo-card {
+        position: relative;
+        width: 68px;
+        height: 68px;
+        border-radius: 20px;
+        background: var(--app-card);
+        border: 1px solid var(--app-border);
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .pre-logo-card img {
+        width: 44px;
+        height: 44px;
+        object-fit: contain;
+      }
+      .pre-brand-title {
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: -0.2px;
+        color: var(--app-text);
+        margin-bottom: 14px;
+      }
+      .pre-progress-track {
+        width: 190px;
+        height: 4px;
+        background: var(--app-border);
+        border-radius: 9999px;
+        overflow: hidden;
+        position: relative;
+        margin-bottom: 14px;
+      }
+      .pre-progress-bar {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 40%;
+        background: linear-gradient(90deg, #0284c7, #38bdf8, #0284c7);
+        border-radius: 9999px;
+        animation: pre-slide 1.4s ease-in-out infinite;
+      }
+      .pre-status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 12px;
+        background: var(--app-card);
+        border: 1px solid var(--app-border);
+        border-radius: 9999px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+      }
+      .pre-live-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #10b981;
+        box-shadow: 0 0 8px #10b981;
+        animation: pre-blink 1.2s ease-in-out infinite;
+      }
+      .pre-status-text {
+        font-size: 12px;
+        color: var(--app-muted);
+        font-weight: 500;
+        white-space: nowrap;
+        transition: opacity 0.2s ease;
+      }
+      @keyframes pre-slide {
+        0% { transform: translateX(-100%); }
+        50% { transform: translateX(250%); }
+        100% { transform: translateX(-100%); }
+      }
+      @keyframes pre-pulse {
+        0%, 100% { transform: scale(1); opacity: 0.15; }
+        50% { transform: scale(1.08); opacity: 0.4; }
+      }
+      @keyframes pre-blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+      }
+    </style>
+    <script>
+      // Instantly apply dark mode before first paint if user preferred dark
+      try {
+        var t = localStorage.getItem('theme');
+        if (t === 'dark' || (!t && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.classList.add('dark');
+        }
+      } catch (e) {}
+    </script>
+</head>
+
+  <body>
+    <div id="root">
+      <!-- Instant preloader shown before JS loads, removed automatically when React mounts -->
+      <div id="app-preloader" role="status" aria-live="polite" aria-label="Loading Realtech Computer">
+        <div class="pre-glow"></div>
+        <div class="pre-logo-wrapper">
+          <div class="pre-ring"></div>
+          <div class="pre-logo-card">
+            <img src="/realtech-logo.png" alt="Realtech Logo" onerror="this.onerror=null; this.src='/favicon.ico';" />
+          </div>
+        </div>
+        <div class="pre-brand-title">Realtech Computer</div>
+        <div class="pre-progress-track">
+          <div class="pre-progress-bar"></div>
+        </div>
+        <div class="pre-status-badge">
+          <span class="pre-live-dot"></span>
+          <span id="pre-status-label" class="pre-status-text">Loading store…</span>
+        </div>
+      </div>
+      <script>
+        (function() {
+          try {
+            var customLogo = localStorage.getItem('site_logo_url');
+            if (customLogo) {
+              var pImg = document.querySelector('.pre-logo-card img');
+              if (pImg) pImg.src = customLogo;
+            }
+          } catch(e) {}
+
+          var label = document.getElementById('pre-status-label');
+          if (!label) return;
+          var messages = [
+            { t: 900, text: 'Connecting to store…' },
+            { t: 2200, text: 'Preparing products & catalog…' },
+            { t: 4000, text: 'Almost ready, please wait…' }
+          ];
+          messages.forEach(function(m) {
+            setTimeout(function() {
+              if (label) {
+                label.style.opacity = '0';
+                setTimeout(function() {
+                  if (label) {
+                    label.textContent = m.text;
+                    label.style.opacity = '1';
+                  }
+                }, 150);
+              }
+            }, m.t);
+          });
+        })();
+      </script>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

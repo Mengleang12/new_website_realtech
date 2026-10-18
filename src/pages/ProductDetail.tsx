@@ -1,0 +1,1083 @@
+import { useState, lazy, Suspense, useMemo } from "react";
+import { toast } from "sonner";
+import realtechLogo from "@/assets/realtech-logo.png";
+import { useParams, useNavigate, Link, useLocation } from "react-router-dom";
+import {
+  Download, Calendar, HardDrive, ExternalLink, Package, ChevronLeft, 
+  ChevronRight, X, Shield, ArrowLeft, Home, Search,
+  Box, Gamepad2, Puzzle, LayoutGrid, ChevronDown, ShoppingCart, Lock, AlertTriangle,
+  ShoppingBag, Tag, Boxes, Play, LogIn, CreditCard, Settings, EyeOff
+} from "lucide-react";
+import dynamicIconImports from "lucide-react/dynamicIconImports";
+import { useCategories } from "@/hooks/useCategories";
+import { useLanguage, useTranslations } from "@/contexts/LanguageContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { appsApi, activityLogsApi, type ApplicableCoupon } from "@/lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { PaymentDialog } from "@/components/PaymentDialog";
+import { CouponSuggestion } from "@/components/CouponSuggestion";
+import { useHasPurchased } from "@/hooks/useOrders";
+import { RichContent } from "@/components/RichTextEditor";
+import { useCart } from "@/contexts/CartContext";
+import { cn } from "@/lib/utils";
+import { FloatingCartButton } from "@/components/FloatingCartButton";
+import { SEOHead, type BreadcrumbItem } from "@/components/SEOHead";
+import { StoreFooter } from "@/components/StoreFooter";
+const getGradientFromName = (name: string | undefined): string => {
+  const gradients = [
+    "bg-gradient-to-br from-blue-500 to-cyan-500",
+    "bg-gradient-to-br from-purple-500 to-pink-500",
+    "bg-gradient-to-br from-green-500 to-emerald-600",
+    "bg-gradient-to-br from-orange-500 to-red-500",
+    "bg-gradient-to-br from-indigo-500 to-purple-600",
+    "bg-gradient-to-br from-amber-500 to-yellow-600",
+  ];
+  if (!name) return gradients[0];
+  const hash = name.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return gradients[hash % gradients.length];
+};
+
+// Extract YouTube video ID from various URL formats
+const getYouTubeVideoId = (url: string): string | null => {
+  if (!url) return null;
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+    /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
+  ];
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+};
+
+// Screenshot Gallery Component with Lightbox
+const ScreenshotGallery = ({ 
+  screenshots, 
+  selectedIndex, 
+  setSelectedIndex 
+}: { 
+  screenshots: { image_url: string; sort_order: number }[];
+  selectedIndex: number;
+  setSelectedIndex: (index: number) => void;
+}) => {
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  
+  if (!screenshots || screenshots.length === 0) return null;
+
+  const sortedScreenshots = [...screenshots].sort((a, b) => a.sort_order - b.sort_order);
+
+  const handlePrev = () => {
+    setSelectedIndex(selectedIndex === 0 ? sortedScreenshots.length - 1 : selectedIndex - 1);
+  };
+
+  const handleNext = () => {
+    setSelectedIndex(selectedIndex === sortedScreenshots.length - 1 ? 0 : selectedIndex + 1);
+  };
+
+  return (
+    <>
+      {/* Main Screenshot Display */}
+      <div 
+        className="relative aspect-video bg-muted rounded-xl overflow-hidden cursor-pointer group"
+        onClick={() => setLightboxOpen(true)}
+      >
+        <img
+          src={sortedScreenshots[selectedIndex]?.image_url}
+          alt={`Screenshot ${selectedIndex + 1}`}
+          className="w-full h-full object-contain"
+        />
+        
+        {/* Navigation arrows */}
+        {sortedScreenshots.length > 1 && (
+          <>
+            <button
+              onClick={(e) => { e.stopPropagation(); handlePrev(); }}
+              className="absolute left-2 top-1/2 -translate-y-1/2 p-2 bg-black/50 hover:bg-black/70 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleNext(); }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-black/50 hover:bg-black/70 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </>
+        )}
+        
+        {/* Counter */}
+        {sortedScreenshots.length > 1 && (
+          <div className="absolute bottom-2 right-2 px-2 py-1 bg-black/60 rounded-md text-white text-xs">
+            {selectedIndex + 1} / {sortedScreenshots.length}
+          </div>
+        )}
+      </div>
+
+      {/* Horizontal thumbnail strip below main image */}
+      {sortedScreenshots.length > 1 && (
+        <div className="flex gap-2 mt-3 overflow-x-auto pb-2">
+          {sortedScreenshots.map((screenshot, index) => (
+            <button
+              key={screenshot.image_url}
+              onClick={() => setSelectedIndex(index)}
+              className={`flex-shrink-0 rounded-lg overflow-hidden border-2 transition-all ${
+                index === selectedIndex 
+                  ? 'border-primary ring-2 ring-primary/30' 
+                  : 'border-transparent hover:border-muted-foreground/30'
+              }`}
+            >
+              <img
+                src={screenshot.image_url}
+                alt={`Thumbnail ${index + 1}`}
+                className="w-16 h-12 object-cover"
+              />
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Fullscreen Lightbox */}
+      {lightboxOpen && (
+        <div 
+          className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center"
+          onClick={() => setLightboxOpen(false)}
+        >
+          <button
+            onClick={(e) => { e.stopPropagation(); setLightboxOpen(false); }}
+            className="absolute top-4 right-4 p-2 text-white/70 hover:text-white transition-colors z-10"
+          >
+            <X className="w-6 h-6" />
+          </button>
+          
+          {sortedScreenshots.length > 1 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); handlePrev(); }}
+              className="absolute left-4 p-2 text-white/70 hover:text-white transition-colors"
+            >
+              <ChevronLeft className="w-8 h-8" />
+            </button>
+          )}
+          
+          <img
+            src={sortedScreenshots[selectedIndex].image_url}
+            alt={`Screenshot ${selectedIndex + 1}`}
+            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+          
+          {sortedScreenshots.length > 1 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleNext(); }}
+              className="absolute right-4 p-2 text-white/70 hover:text-white transition-colors"
+            >
+              <ChevronRight className="w-8 h-8" />
+            </button>
+          )}
+          
+          {sortedScreenshots.length > 1 && (
+            <div className="absolute bottom-4 text-white/70 text-sm">
+              {selectedIndex + 1} / {sortedScreenshots.length}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+};
+
+// Metadata Item Component
+const MetadataItem = ({ 
+  label, 
+  value, 
+  expandable 
+}: { 
+  label: string; 
+  value: string | undefined; 
+  expandable?: boolean;
+}) => {
+  const [expanded, setExpanded] = useState(false);
+  
+  if (!value) return null;
+  
+  const isLongValue = value.length > 30;
+  const displayValue = expandable && isLongValue && !expanded 
+    ? value.substring(0, 30) + '...' 
+    : value;
+  
+  return (
+    <div className="space-y-1">
+      <div className="text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
+      <div className="text-sm text-foreground flex items-center gap-1">
+        {displayValue}
+        {expandable && isLongValue && (
+          <button 
+            onClick={() => setExpanded(!expanded)}
+            className="text-primary hover:text-primary/80 text-xs"
+          >
+            {expanded ? '▲' : '▼'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Loading Skeleton
+const AppDetailSkeleton = () => (
+  <div className="p-6">
+    <div className="flex items-center gap-4 mb-6">
+      <Skeleton className="w-16 h-16 rounded-2xl" />
+      <div className="space-y-2">
+        <Skeleton className="h-6 w-48" />
+        <Skeleton className="h-4 w-32" />
+      </div>
+    </div>
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="lg:col-span-2">
+        <Skeleton className="aspect-video w-full rounded-xl" />
+      </div>
+      <div className="space-y-4">
+        <Skeleton className="h-40 w-full rounded-xl" />
+        <Skeleton className="h-12 w-full rounded-xl" />
+      </div>
+    </div>
+  </div>
+);
+
+const ProductDetail = () => {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { t } = useLanguage();
+  const translations = useTranslations();
+  const { user, isAdminOrModerator } = useAuth();
+  const { addToCart, items } = useCart();
+  const { data: categories } = useCategories();
+  const [selectedScreenshot, setSelectedScreenshot] = useState(0);
+  const [showLangMenu, setShowLangMenu] = useState(false);
+  const [showPaymentDialog, setShowPaymentDialog] = useState(false);
+  const [selectedCoupon, setSelectedCoupon] = useState<ApplicableCoupon | null>(null);
+  const [selectedVariantIdx, setSelectedVariantIdx] = useState<number | null>(0);
+  const { language, setLanguage } = useLanguage();
+  
+  // Get the previous location from state or default to home
+  const fromPath = (location.state as { from?: string })?.from || '/';
+  
+  const handleBack = () => {
+    // Navigate to the stored path which includes search params (e.g. /?appPage=2)
+    if (fromPath) {
+      const url = new URL(fromPath, window.location.origin);
+      navigate({ pathname: url.pathname, search: url.search });
+    } else {
+      navigate('/');
+    }
+  };
+  
+  const languages = [
+    { code: "km" as const, name: "ខ្មែរ", flag: "🇰🇭" },
+    { code: "en" as const, name: "EN", flag: "🇬🇧" },
+  ];
+  const currentLang = languages.find(l => l.code === language) || languages[0];
+  const [searchQuery, setSearchQuery] = useState("");
+  
+  // Extract app ID from URL
+  const appId = id ? parseInt(id) : null;
+  
+  // Check if user has purchased this app
+  const { data: hasPurchased, isLoading: purchaseLoading } = useHasPurchased(appId || 0);
+  
+  // Fetch app details
+  const { data: appData, isLoading: appLoading, error: appError } = useQuery({
+    queryKey: ["app", appId],
+    queryFn: () => appsApi.getById(appId!),
+    enabled: !!appId,
+  });
+
+  const displayName = appData ? t(appData.name_km, appData.name) : '';
+  const displayDescription = appData ? t(appData.description_km, appData.description) : '';
+
+  const activeVariants = useMemo(() => {
+    if (!appData?.variants) return [];
+    return [...appData.variants]
+      .filter(v => v.is_active)
+      .sort((a, b) => {
+        const aInStock = (Number(a.stock_quantity) || 0) > 0 ? 1 : 0;
+        const bInStock = (Number(b.stock_quantity) || 0) > 0 ? 1 : 0;
+        if (aInStock !== bInStock) return bInStock - aInStock;
+        return 0;
+      });
+  }, [appData?.variants]);
+  const defaultVariant = activeVariants.find(v => v.is_default) || activeVariants[0];
+  const totalStock = activeVariants.reduce((sum, v) => sum + v.stock_quantity, 0);
+
+  const seoProduct = useMemo(() => {
+    if (!appData) return undefined;
+    return {
+      name: appData.name,
+      description: appData.description || `Buy ${appData.name} at Realtech Computer Cambodia`,
+      image: appData.icon_url || undefined,
+      price: defaultVariant?.price_adjustment || 0,
+      currency: "USD",
+      sku: defaultVariant?.sku || `RT-${appData.id}`,
+      brand: appData.brand?.name,
+      category: appData.category_relation?.name || appData.category,
+      availability: (totalStock <= 0 ? "OutOfStock" : totalStock <= 5 ? "LimitedAvailability" : "InStock") as "InStock" | "OutOfStock" | "LimitedAvailability",
+    };
+  }, [appData, defaultVariant, totalStock]);
+
+  const seoBreadcrumbs: BreadcrumbItem[] = useMemo(() => {
+    const crumbs: BreadcrumbItem[] = [{ name: "Home", url: "/" }];
+    if (appData?.category_relation?.name) {
+      crumbs.push({ name: appData.category_relation.name, url: `/?category=${appData.category_relation.slug || appData.category}` });
+    }
+    if (displayName) {
+      crumbs.push({ name: displayName, url: `/${appId}` });
+    }
+    return crumbs;
+  }, [appData, displayName, appId]);
+
+  if (!appId) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <h1 className="text-2xl font-bold mb-2">{translations.invalidApp}</h1>
+          <Link to="/" className="text-primary hover:underline">{translations.goBackHome}</Link>
+        </div>
+      </div>
+    );
+  }
+
+
+  return (
+    <>
+    <SEOHead
+      title={displayName || undefined}
+      description={displayDescription ? displayDescription.replace(/<[^>]*>/g, '').slice(0, 155) : undefined}
+      image={appData?.icon_url || undefined}
+      url={`/${appId}`}
+      type="product"
+      product={seoProduct}
+      breadcrumbs={seoBreadcrumbs}
+    />
+    <div className="min-h-screen bg-background">
+      {/* Sidebar - matching home page */}
+      <aside className="fixed inset-y-0 left-0 z-50 w-[220px] bg-sidebar/80 backdrop-blur-xl border-r border-sidebar-border flex-col hidden lg:flex pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
+        {/* Logo */}
+        <div className="h-[70px] flex items-center justify-center px-4 border-b border-sidebar-border/60">
+          <Link to="/">
+            <div className="w-20 h-20 rounded-md overflow-hidden shrink-0">
+              <img src={realtechLogo} alt="Realtech" className="w-full h-full object-contain" />
+            </div>
+          </Link>
+        </div>
+
+        {/* Categories */}
+        <nav className="flex-1 overflow-y-auto scrollbar-macos px-2 py-3 space-y-4">
+          <div className="space-y-0.5">
+            <p className="px-2.5 py-1 text-[11px] font-semibold text-muted-foreground/70 uppercase tracking-wider select-none">
+              {language === "km" ? "ប្រភេទ" : "Categories"}
+            </p>
+            
+            <Link
+              to="/"
+              className="w-full flex items-center gap-2.5 px-2.5 py-[7px] rounded-md text-[13px] font-medium transition-all text-sidebar-foreground hover:bg-accent/70 hover:text-foreground"
+            >
+              <LayoutGrid className="w-[16px] h-[16px] shrink-0 opacity-80" />
+              <span className="flex-1 truncate">{language === "km" ? "ទាំងអស់" : "All Products"}</span>
+            </Link>
+
+            {(categories || [])
+              .filter(c => c.is_active)
+              .sort((a, b) => a.sort_order - b.sort_order)
+              .map((cat) => {
+                const displayCatName = language === "km" && cat.name_km ? cat.name_km : cat.name;
+                return (
+                  <Link
+                    key={cat.id}
+                    to={`/?category=${cat.slug}`}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-[7px] rounded-md text-[13px] font-medium transition-all text-sidebar-foreground hover:bg-accent/70 hover:text-foreground"
+                  >
+                    {cat.icon_url ? (
+                      <img src={cat.icon_url} alt="" className="w-4 h-4 rounded object-contain shrink-0 opacity-80" />
+                    ) : (
+                      <Package className="w-[16px] h-[16px] shrink-0 opacity-80" />
+                    )}
+                    <span className="flex-1 truncate">{displayCatName}</span>
+                  </Link>
+                );
+              })}
+          </div>
+
+          {user && (
+            <div className="space-y-0.5">
+              <p className="px-2.5 py-1 text-[11px] font-semibold text-muted-foreground/70 uppercase tracking-wider select-none">
+                {language === "km" ? "គណនី" : "Account"}
+              </p>
+              {[
+                { path: "/my-purchases", label: language === "km" ? "កម្មវិធីដែលបានទិញ" : "My Purchases", icon: ShoppingCart },
+                { path: "/payment-history", label: language === "km" ? "ប្រវត្តិបង់ប្រាក់" : "Payment History", icon: CreditCard },
+                { path: "/profile", label: language === "km" ? "ការកំណត់គណនី" : "Profile Settings", icon: Settings },
+              ].map((item) => (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  className={cn(
+                    "w-full flex items-center gap-2.5 px-2.5 py-[7px] rounded-md text-[13px] font-medium transition-all",
+                    location.pathname === item.path
+                      ? "bg-primary text-primary-foreground"
+                      : "text-sidebar-foreground hover:bg-accent/70 hover:text-foreground"
+                  )}
+                >
+                  <item.icon className="w-[16px] h-[16px] shrink-0 opacity-80" />
+                  <span className="flex-1 truncate">{item.label}</span>
+                </Link>
+              ))}
+            </div>
+          )}
+        </nav>
+
+        <div className="px-3 py-2.5 border-t border-sidebar-border/60">
+          {!user && (
+            <Link
+              to="/auth"
+              className="w-full flex items-center gap-2.5 px-2.5 py-[7px] rounded-md text-[13px] font-medium text-sidebar-foreground hover:bg-accent/70 hover:text-foreground transition-all mb-1.5"
+            >
+              <LogIn className="w-4 h-4 opacity-80" />
+              <span>{language === "km" ? "ចូល" : "Sign In"}</span>
+            </Link>
+          )}
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 px-1">
+            {["DMCA", "Privacy", "FAQ", "Contact"].map((link) => (
+              <span
+                key={link}
+                className="text-[11px] text-muted-foreground/60 hover:text-muted-foreground cursor-pointer transition-colors"
+              >
+                {link}
+              </span>
+            ))}
+          </div>
+        </div>
+      </aside>
+      
+      {/* Main Content & Layout Wrapper */}
+      <div className="lg:ml-[220px] min-h-screen flex flex-col">
+        <main className="flex-1">
+        {/* Header */}
+        <header className="sticky top-0 z-40 glass py-3 sm:py-4 px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center gap-2 sm:gap-4">
+            {/* Back button */}
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              onClick={handleBack}
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </Button>
+            
+            {/* Search */}
+            <div className="flex-1 relative group">
+              <Search className="absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 w-4 h-4 sm:w-5 sm:h-5 text-muted-foreground transition-colors group-focus-within:text-primary" />
+              <input
+                type="text"
+                placeholder={translations.search}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="search-input pl-10 sm:pl-12 pr-4 py-2.5 sm:py-3 text-sm sm:text-base w-full"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && searchQuery.trim()) {
+                    navigate(`/?search=${encodeURIComponent(searchQuery.trim())}`);
+                  }
+                }}
+              />
+            </div>
+
+            {/* Theme Toggle */}
+            <ThemeToggle />
+
+            {/* Language selector */}
+            <div className="relative">
+              <button 
+                onClick={() => setShowLangMenu(!showLangMenu)}
+                className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-2 text-muted-foreground hover:text-foreground transition-all duration-300 rounded-xl hover:bg-accent"
+              >
+                <span className="text-base sm:text-lg">{currentLang.flag}</span>
+                <span className="text-xs sm:text-sm hidden xs:inline">{currentLang.name}</span>
+                <ChevronDown className={`w-3 h-3 sm:w-4 sm:h-4 transition-transform duration-300 ${showLangMenu ? 'rotate-180' : ''}`} />
+              </button>
+              
+              {showLangMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowLangMenu(false)} />
+                  <div className="absolute top-full right-0 mt-2 bg-card rounded-xl border border-border shadow-xl overflow-hidden min-w-[100px] sm:min-w-[120px] z-50 animate-fade-in">
+                    {languages.map((lang) => (
+                      <button
+                        key={lang.code}
+                        onClick={() => {
+                          setLanguage(lang.code);
+                          setShowLangMenu(false);
+                        }}
+                        className={`w-full flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-2.5 hover:bg-accent transition-all duration-300 ${
+                          language === lang.code ? 'bg-primary/10 text-primary' : ''
+                        }`}
+                      >
+                        <span className="text-base sm:text-lg">{lang.flag}</span>
+                        <span className="text-xs sm:text-sm">{lang.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* User actions */}
+            {user ? (
+              <div className="flex items-center gap-2">
+                <Link to="/my-purchases">
+                  <Button variant="ghost" size="sm" className="gap-2">
+                    <ShoppingBag className="w-4 h-4" />
+                    <span className="hidden sm:inline">
+                      {language === 'km' ? 'កម្មវិធីដែលបានទិញ' : 'My Purchases'}
+                    </span>
+                  </Button>
+                </Link>
+              </div>
+            ) : (
+              <Link to="/auth" className="btn-primary text-xs sm:text-sm px-3 sm:px-6 py-2 sm:py-2.5">
+                {translations.login}
+              </Link>
+            )}
+          </div>
+        </header>
+
+        <div className="px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground mb-6 overflow-x-auto whitespace-nowrap pb-1">
+            <Link to="/" className="flex items-center gap-1 hover:text-foreground transition-colors">
+              <Home className="w-4 h-4" />
+              <span>{translations.home}</span>
+            </Link>
+            <span>/</span>
+            {appData && (
+              <>
+                <Link 
+                  to={`/?category=${appData.category_relation?.slug || appData.category}`} 
+                  className="hover:text-foreground transition-colors"
+                >
+                  {language === "km" && appData.category_relation?.name_km ? appData.category_relation.name_km : appData.category_relation?.name || appData.category}
+                </Link>
+                <span>/</span>
+                <span className="text-foreground">{displayName}</span>
+              </>
+            )}
+          </div>
+
+          {appLoading ? (
+            <AppDetailSkeleton />
+          ) : appError ? (
+            <div className="text-center py-12">
+              <h1 className="text-2xl font-bold mb-2">{translations.appNotFound}</h1>
+              <p className="text-muted-foreground mb-4">{translations.appNotFound}</p>
+              <Button onClick={() => navigate('/')} variant="outline" className="gap-2">
+                <ArrowLeft className="w-4 h-4" />
+                {translations.backToHome}
+              </Button>
+            </div>
+          ) : (appData && (appData.is_visible === false || (appData as any).is_active === false) && !isAdminOrModerator) ? (
+            <div className="text-center py-16 max-w-md mx-auto space-y-4">
+              <div className="w-16 h-16 rounded-2xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto">
+                <EyeOff className="w-8 h-8" />
+              </div>
+              <h1 className="text-2xl font-bold text-foreground">
+                {language === 'km' ? 'ផលិតផលនេះត្រូវបានលាក់បណ្ដោះអាសន្ន' : 'Product Currently Unavailable'}
+              </h1>
+              <p className="text-muted-foreground text-sm">
+                {language === 'km' ? 'ផលិតផលនេះមិនទាន់ដាក់លក់ ឬត្រូវបានលាក់នៅក្នុងហាង' : 'This product has been hidden from the store by the administrator.'}
+              </p>
+              <Button onClick={() => navigate('/')} variant="outline" className="gap-2">
+                <ArrowLeft className="w-4 h-4" />
+                {translations.backToHome}
+              </Button>
+            </div>
+          ) : appData && (
+            <div className="space-y-6">
+              {(appData.is_visible === false || (appData as any).is_active === false) && (
+                <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between gap-3 text-amber-700 dark:text-amber-300 text-xs sm:text-sm">
+                  <div className="flex items-center gap-2 font-medium">
+                    <EyeOff className="w-4 h-4 shrink-0 text-amber-600" />
+                    <span>Admin Notice: This product is hidden from store customers. Only administrators can view this page.</span>
+                  </div>
+                  <Link to="/admin" className="underline font-semibold shrink-0 hover:text-foreground">
+                    Manage in Admin
+                  </Link>
+                </div>
+              )}
+              {/* ── Hero Section ── */}
+              <div className="bg-card rounded-2xl border border-border/50 p-6 sm:p-8">
+                <div className="flex flex-col sm:flex-row items-start gap-5">
+                  {/* App Icon */}
+                  {appData.icon_url ? (
+                    <img
+                      src={appData.icon_url}
+                      alt={displayName}
+                      className="w-24 h-24 sm:w-28 sm:h-28 rounded-[1.25rem] shadow-[var(--shadow-window)] object-cover shrink-0 ring-1 ring-border/30"
+                    />
+                  ) : (
+                    <div className={`w-24 h-24 sm:w-28 sm:h-28 rounded-[1.25rem] ${getGradientFromName(appData.name)} flex items-center justify-center shadow-[var(--shadow-window)] shrink-0`}>
+                      <Package className="w-12 h-12 text-white/80" />
+                    </div>
+                  )}
+
+                  {/* App Info */}
+                  <div className="flex-1 min-w-0 space-y-3">
+                    <div>
+                      <h1 className="text-2xl sm:text-3xl font-bold text-foreground leading-tight">{displayName}</h1>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2">
+                        <Link
+                          to={`/?category=${appData.category_relation?.slug || appData.category}`}
+                          className="text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          {language === "km" && appData.category_relation?.name_km ? appData.category_relation.name_km : appData.category_relation?.name || appData.category}
+                        </Link>
+                        {(appData.warranty_period || appData.warranty || appData.warranty_policy) && (
+                          <span 
+                            className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium border border-emerald-500/20"
+                            title={appData.warranty_policy || (typeof appData.warranty === 'object' && (appData.warranty as any)?.policy ? (appData.warranty as any).policy : undefined)}
+                          >
+                            <Shield className="w-3 h-3" />
+                            {language === "km" ? "ការធានា៖ " : "Warranty: "}
+                            {typeof appData.warranty === 'object' && (appData.warranty as any)?.name
+                              ? (appData.warranty as any).name
+                              : (appData.warranty_period || (typeof appData.warranty === 'string' ? appData.warranty : ''))}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Main Content Grid ── */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Left — Screenshots + Description */}
+                <div className="lg:col-span-2 space-y-6">
+                  {/* Screenshots */}
+                  <div className="bg-card rounded-2xl border border-border/50 p-4 sm:p-5">
+                    {appData.screenshots && appData.screenshots.length > 0 ? (
+                      <ScreenshotGallery
+                        screenshots={appData.screenshots}
+                        selectedIndex={selectedScreenshot}
+                        setSelectedIndex={setSelectedScreenshot}
+                      />
+                    ) : (
+                      <div className="aspect-video bg-muted/50 rounded-xl flex items-center justify-center">
+                        <Package className="w-16 h-16 text-muted-foreground/20" />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Description */}
+                  {displayDescription && (
+                    <div className="bg-card rounded-2xl border border-border/50 p-6 sm:p-8">
+                      <h2 className="text-lg font-semibold mb-1">{translations.description}</h2>
+                      <div className="w-10 h-0.5 bg-primary rounded-full mb-5" />
+                      <RichContent html={displayDescription} className="text-sm text-muted-foreground leading-relaxed" />
+                    </div>
+                  )}
+
+                  {/* YouTube Tutorial Videos */}
+                  {(() => {
+                    const activeVars = appData.variants?.filter(v => v.is_active) || [];
+                    const priceNum = activeVars.length > 0 ? Number(activeVars[0].price_adjustment || 0) : 0;
+                    const isPaidApp = priceNum > 0;
+                    const canViewVideos = !isPaidApp || hasPurchased === true;
+                    
+                    let rawVideosList: any = appData.videos || (appData as any).product_videos;
+                    let parsedVideosList: any[] = [];
+                    if (typeof rawVideosList === 'string') {
+                      try { parsedVideosList = JSON.parse(rawVideosList); } catch { parsedVideosList = []; }
+                    } else if (Array.isArray(rawVideosList)) {
+                      parsedVideosList = rawVideosList;
+                    }
+                    if (parsedVideosList.length === 0) {
+                      const directUrl = ((appData as any).youtube_url || (appData as any).video_url || (appData as any).youtube_video_url || '').trim();
+                      if (directUrl) {
+                        parsedVideosList = [{ id: 1, title: displayName || 'Feature Video', youtube_url: directUrl }];
+                      }
+                    }
+                    const videos = parsedVideosList;
+
+                    if (videos.length === 0) return null;
+
+                    if (!canViewVideos) {
+                      return (
+                        <div className="bg-card rounded-2xl border border-border/50 p-6 sm:p-8">
+                          <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
+                            <Play className="w-5 h-5 text-destructive" />
+                            {language === 'km' ? 'វីដេអូលក្ខណៈពិសេស' : 'Feature Video'}
+                          </h2>
+                          <div className="w-10 h-0.5 bg-destructive rounded-full mb-5" />
+                          <div className="py-8 text-center">
+                            <Lock className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
+                            <p className="text-muted-foreground font-medium">
+                              {language === 'km' ? 'ទិញកម្មវិធីដើម្បីមើលវីដេអូ' : 'Purchase this app to view feature videos'}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {videos.length} {language === 'km' ? 'វីដេអូ' : videos.length === 1 ? 'video' : 'videos'} {language === 'km' ? 'មាន' : 'available'}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="bg-card rounded-2xl border border-border/50 p-6 sm:p-8">
+                        <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
+                          <Play className="w-5 h-5 text-destructive" />
+                          {language === 'km' ? 'វីដេអូលក្ខណៈពិសេស' : 'Feature Video'}
+                          <Badge variant="secondary" className="text-xs">{videos.length}</Badge>
+                        </h2>
+                        <div className="w-10 h-0.5 bg-destructive rounded-full mb-5" />
+                        <div className="space-y-6">
+                          {videos.map((video, idx) => {
+                            const rawUrl = video.youtube_url || video.video_url || video.url || video.link || (typeof video === 'string' ? video : '');
+                            const videoId = getYouTubeVideoId(rawUrl);
+                            if (!videoId) return null;
+                            return (
+                              <div key={video.id || idx}>
+                                <h3 className="text-sm font-medium mb-2">{video.title || `Video ${idx + 1}`}</h3>
+                                <div className="aspect-video rounded-xl overflow-hidden bg-muted border border-border/50">
+                                  <iframe
+                                    src={`https://www.youtube.com/embed/${videoId}`}
+                                    title={video.title || "YouTube video"}
+                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                    allowFullScreen
+                                    className="w-full h-full"
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                </div>
+
+                {/* Right Sidebar — Download + Metadata */}
+                <div className="space-y-5 lg:sticky lg:top-24 lg:self-start">
+                  {/* Download / Purchase CTA */}
+                  <div className="bg-card rounded-2xl border border-border/50 p-5 space-y-4">
+                    {/* Variant selector */}
+                    {(() => {
+                      const activeVariants2 = appData.variants?.filter(v => v.is_active) || [];
+                      const priceNum = activeVariants2.length > 0 ? Number(activeVariants2[0].price_adjustment || 0) : 0;
+                      const isPaidApp = priceNum > 0;
+                      const inCart = items.some(i => i.app.id === appData.id);
+                      const hasVariants = activeVariants2.length > 0;
+                      const activeVariants = activeVariants2;
+                      const selectedVariant = selectedVariantIdx !== null ? activeVariants[selectedVariantIdx] : null;
+                      const defaultVariantPrice = activeVariants.length > 0 ? (Number(activeVariants[0].price_adjustment) || 0) : 0;
+                      const finalPrice = selectedVariant ? Number(selectedVariant.price_adjustment) || 0 : defaultVariantPrice;
+                      const priceDisplay = finalPrice > 0 ? `$${finalPrice.toFixed(2)}` : '';
+
+                      // Stock calculation
+                      const totalStock = hasVariants
+                        ? activeVariants.reduce((s, v) => s + v.stock_quantity, 0)
+                        : 0;
+                      const selectedStock = selectedVariant ? selectedVariant.stock_quantity : totalStock;
+                      const isOOS = selectedStock <= 0;
+                      const isLowStock = selectedStock > 0 && selectedStock <= 5;
+
+                      return (
+                        <div className="space-y-3">
+                          {/* Variant picker */}
+                          {hasVariants && activeVariants.length > 0 && (
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium text-muted-foreground">
+                                {language === 'km' ? 'ជ្រើសរើសប្រភេទ' : 'Select variant'}
+                              </label>
+                              <div className="flex flex-wrap gap-1.5">
+                                {activeVariants.map((v, idx) => {
+                                  const label = Object.values(v.combination).join(' / ');
+                                  const vOOS = v.stock_quantity <= 0;
+                                  const selected = selectedVariantIdx === idx;
+                                  return (
+                                    <button
+                                      key={idx}
+                                      type="button"
+                                      onClick={() => setSelectedVariantIdx(selected ? null : idx)}
+                                      disabled={vOOS}
+                                      className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border transition-all ${
+                                        vOOS
+                                          ? 'border-border/30 text-muted-foreground/40 line-through cursor-not-allowed'
+                                          : selected
+                                            ? 'border-primary bg-primary text-primary-foreground'
+                                            : 'border-border hover:border-primary/50 text-foreground'
+                                      }`}
+                                    >
+                                      {v.variant_image ? (
+                                        <img src={v.variant_image} alt={label} className="w-5 h-5 rounded object-cover flex-shrink-0" />
+                                      ) : v.display_color ? (
+                                        <span className="w-3 h-3 rounded-full flex-shrink-0 border border-border/40" style={{ backgroundColor: v.display_color }} />
+                                      ) : null}
+                                      {label}
+                                      {Number(v.price_adjustment) > 0 && !vOOS && (
+                                        <span className="ml-1 text-[10px] opacity-70">${Number(v.price_adjustment).toFixed(0)}</span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Stock indicator */}
+                          {isOOS ? (
+                            <div className="text-center py-2 bg-destructive/10 rounded-lg">
+                              <span className="text-sm font-semibold text-destructive">
+                                {language === 'km' ? 'អស់ស្តុក' : 'Out of Stock'}
+                              </span>
+                            </div>
+                          ) : isLowStock ? (
+                            <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 text-xs font-medium">
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                              {selectedStock} {language === 'km' ? 'នៅសល់' : 'left in stock'}
+                            </div>
+                          ) : null}
+
+                          {/* Price display */}
+                          <div className="flex items-baseline gap-2">
+                            {finalPrice > 0 ? (
+                              <>
+                                <span className="text-2xl font-bold text-destructive">${finalPrice.toFixed(2)}</span>
+                              </>
+                            ) : (
+                              <span className="text-xl font-bold text-primary">
+                                {language === 'km' ? 'ឥតគិតថ្លៃ' : 'Free'}
+                              </span>
+                            )}
+                          </div>
+
+                          {isPaidApp && user && purchaseLoading ? (
+                            <Button className="w-full h-12 text-sm font-semibold gap-2" disabled>
+                              <ShoppingCart className="w-4 h-4 animate-pulse" />
+                              {language === 'km' ? 'កំពុងពិនិត្យ...' : 'Checking...'}
+                            </Button>
+                          ) : (
+                            <>
+                              {/* Direct Buy button */}
+                              <Button
+                                className="w-full h-12 text-sm font-semibold gap-2 bg-green-600 hover:bg-green-700 text-white"
+                                disabled={isOOS || (hasVariants && !selectedVariant)}
+                                onClick={() => {
+                                  if (!user) { navigate('/auth'); return; }
+                                  if (isPaidApp && !hasPurchased) {
+                                    setShowPaymentDialog(true);
+                                  } else {
+                                    addToCart(appData, null, selectedVariant);
+                                    navigate('/checkout');
+                                  }
+                                }}
+                              >
+                                <ShoppingCart className="w-4 h-4" />
+                                {isOOS
+                                  ? (language === 'km' ? 'អស់ស្តុក' : 'Out of Stock')
+                                  : hasVariants && !selectedVariant
+                                    ? (language === 'km' ? 'សូមជ្រើសរើសប្រភេទ' : 'Select a variant')
+                                    : isPaidApp && !hasPurchased
+                                      ? (language === 'km' ? 'ទិញឥឡូវ' : 'Buy Now') + (priceDisplay ? ` — ${priceDisplay}` : '')
+                                      : (language === 'km' ? 'ទទួលបានឥឡូវ' : 'Get Now')
+                                }
+                              </Button>
+                              {/* Add to Cart button */}
+                              <Button
+                                variant="outline"
+                                className="w-full h-10 text-sm font-medium gap-2"
+                                disabled={inCart || isOOS || (hasVariants && !selectedVariant)}
+                                onClick={() => {
+                                  addToCart(appData, null, selectedVariant);
+                                  toast.success(language === 'km' ? 'បានបន្ថែមទៅកន្ត្រក' : 'Added to cart');
+                                }}
+                              >
+                                <ShoppingBag className="w-4 h-4" />
+                                {inCart
+                                  ? (language === 'km' ? 'មានក្នុងកន្ត្រក' : 'In Cart')
+                                  : (language === 'km' ? 'បន្ថែមទៅកន្ត្រក' : 'Add to Cart')}
+                              </Button>
+                            </>
+                          )}
+
+                          {isPaidApp && !hasPurchased && (
+                            <CouponSuggestion
+                              price={finalPrice}
+                              onSelectCoupon={setSelectedCoupon}
+                              selectedCoupon={selectedCoupon}
+                            />
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Metadata Card */}
+
+                  {/* Product Attributes */}
+                  {appData.attribute_values && appData.attribute_values.length > 0 && (
+                    <div className="bg-card rounded-2xl border border-border/50 divide-y divide-border/50">
+                      <h3 className="text-sm font-semibold px-5 py-3.5 text-foreground flex items-center gap-2">
+                        <Tag className="w-4 h-4 text-muted-foreground" />
+                        {language === 'km' ? 'លក្ខណៈពិសេស' : 'Specifications'}
+                      </h3>
+                      {/* Warranty specification item */}
+                      {(appData.warranty_period || appData.warranty || appData.warranty_policy) && (
+                        <div className="px-5 py-3 border-b border-border/40 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-muted-foreground flex items-center gap-2">
+                              <Shield className="w-3.5 h-3.5 text-primary" />
+                              {language === 'km' ? 'ការធានា' : 'Warranty'}
+                            </span>
+                            <span 
+                              className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 text-right"
+                            >
+                              {typeof appData.warranty === 'object' && (appData.warranty as any)?.name
+                                ? (appData.warranty as any).name
+                                : (appData.warranty_period || (typeof appData.warranty === 'string' ? appData.warranty : ''))}
+                            </span>
+                          </div>
+                          {(appData.warranty_policy || (typeof appData.warranty === 'object' && (appData.warranty as any)?.policy)) && (
+                            <p className="text-[11px] text-muted-foreground/80 pl-5.5 pt-0.5 leading-relaxed">
+                              {appData.warranty_policy || (typeof appData.warranty === 'object' && (appData.warranty as any)?.policy)}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      {appData.attribute_values
+                        .filter(av => av.attribute && av.value)
+                        .sort((a, b) => (a.attribute?.sort_order || 0) - (b.attribute?.sort_order || 0))
+                        .map((av) => {
+                          const iconName = av.attribute?.icon as keyof typeof dynamicIconImports | undefined;
+                          const LazyAttrIcon = iconName && dynamicIconImports[iconName]
+                            ? lazy(dynamicIconImports[iconName])
+                            : null;
+                          const displayValue = av.attribute?.type === 'boolean'
+                            ? (av.value === 'true' || av.value === '1' ? (language === 'km' ? 'មាន' : 'Yes') : (language === 'km' ? 'គ្មាន' : 'No'))
+                            : av.value;
+
+                          return (
+                            <div key={av.id} className="flex items-center justify-between px-5 py-3">
+                              <span className="text-xs text-muted-foreground flex items-center gap-2">
+                                {LazyAttrIcon ? (
+                                  <Suspense fallback={<div className="w-3.5 h-3.5" />}>
+                                    <LazyAttrIcon className="w-3.5 h-3.5" />
+                                  </Suspense>
+                                ) : (
+                                  <Tag className="w-3.5 h-3.5" />
+                                )}
+                                {language === 'km' && av.attribute?.name_km ? av.attribute.name_km : av.attribute?.name}
+                              </span>
+                              <span className="text-xs font-medium text-foreground">{displayValue}</span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+
+                  {/* Variant Stock */}
+                  {appData.variants && appData.variants.length > 0 && (
+                    <div className="bg-card rounded-2xl border border-border/50 divide-y divide-border/50">
+                      <h3 className="text-sm font-semibold px-5 py-3.5 text-foreground flex items-center gap-2">
+                        <Boxes className="w-4 h-4 text-muted-foreground" />
+                        {language === 'km' ? 'ស្តុកតាមប្រភេទ' : 'Stock Availability'}
+                      </h3>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-border/50 bg-muted/30">
+                              {(() => {
+                                const firstCombo = appData.variants[0]?.combination || {};
+                                return Object.keys(firstCombo).map(attrId => {
+                                  const attr = appData.attribute_values?.find(av => av.attribute_id === parseInt(attrId))?.attribute;
+                                  return <th key={attrId} className="text-left px-4 py-2 font-medium text-muted-foreground">{language === 'km' && attr?.name_km ? attr.name_km : attr?.name || attrId}</th>;
+                                });
+                              })()}
+                              <th className="text-right px-4 py-2 font-medium text-muted-foreground">{language === 'km' ? 'តម្លៃ' : 'Price'}</th>
+                              <th className="text-right px-4 py-2 font-medium text-muted-foreground">{language === 'km' ? 'ស្តុក' : 'Stock'}</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border/50">
+                            {appData.variants.filter(v => v.is_active).map((variant, idx) => (
+                              <tr key={idx}>
+                                {Object.entries(variant.combination).map(([attrId, val]) => {
+                                  const attr = appData.attribute_values?.find(av => av.attribute_id === parseInt(attrId))?.attribute;
+                                  const display = attr?.type === 'boolean' ? (val === 'true' ? (language === 'km' ? 'មាន' : 'Yes') : (language === 'km' ? 'គ្មាន' : 'No')) : val;
+                                  return <td key={attrId} className="px-4 py-2.5">{display}</td>;
+                                })}
+                                <td className="px-4 py-2.5 text-right font-medium text-foreground">
+                                  ${Number(variant.price_adjustment ?? 0).toFixed(2)}
+                                </td>
+                                <td className="px-4 py-2.5 text-right">
+                                  <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-medium ${variant.stock_quantity > 0 ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-destructive/10 text-destructive'}`}>
+                                    {variant.stock_quantity > 0 ? variant.stock_quantity : (language === 'km' ? 'អស់ស្តុក' : 'Out of stock')}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          {/* Bottom spacing so floating cart button doesn't hide content */}
+          <div className="pb-12" />
+        </div>
+      </main>
+
+      {/* Store Footer */}
+      <StoreFooter />
+    </div>
+      
+      {/* Payment Dialog */}
+      {appData && (() => {
+        const av = appData.variants?.filter(v => v.is_active) || [];
+        const p = av.length > 0 ? Number(av[0].price_adjustment || 0) : 0;
+        return p > 0;
+      })() && (
+        <PaymentDialog
+          open={showPaymentDialog}
+          onOpenChange={(open) => {
+            setShowPaymentDialog(open);
+            if (!open) setSelectedCoupon(null);
+          }}
+          appId={appData.id}
+          appName={displayName}
+          price={appData.variants?.filter(v => v.is_active)?.[0]?.price_adjustment || 0}
+          downloadUrl={undefined}
+          coupon={selectedCoupon}
+          onPaymentSuccess={() => {
+            // Refresh purchase status - dialog stays open to show success
+            setSelectedCoupon(null);
+          }}
+        />
+      )}
+
+      <FloatingCartButton />
+    </div>
+    </>
+  );
+};
+
+export default ProductDetail;

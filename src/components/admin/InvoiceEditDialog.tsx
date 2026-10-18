@@ -1,0 +1,1400 @@
+import { useState, useRef, useEffect, useCallback } from "react";
+import { getInvoiceBranding } from "@/lib/invoice-branding";
+import { getWarrantyStatus, getWarrantyBadgeVariant, getWarrantyHtml } from "@/lib/warranty-utils";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { adminUsersApi, salesApi, warrantyApi, type AdminOrder, type OrderAttachment, type OrderPayment, type SaleProduct } from "@/lib/api";
+import { calculateStockAdjustments, type StockAdjustmentResult } from "@/lib/stockHelpers";
+import { SaleUpdateConfirmDialog, DeleteInvoiceConfirmDialog, StatusChangeConfirmDialog } from "./StockAdjustmentDialog";
+import { AdminDialog, Dialog, DialogContent, DialogHeader, DialogTitle } from "./AdminDialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { Card, CardContent } from "@/components/ui/card";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
+import {
+  Pencil, Image, CreditCard, Loader2, Trash2, Upload, Plus,
+  DollarSign, FileText, X, Package, CheckCircle,
+  Clock, Ban, Printer, Search, Percent, Minus, ChevronLeft, ChevronRight,
+  FileCheck2, AlertTriangle, Check
+} from "lucide-react";
+import { CustomerReceivedNoteDialog } from "./CustomerReceivedNoteDialog";
+import { getReceivedNotesForOrder, getOrderDeliveryStatus, subscribeToReceivedNotes } from "@/lib/receivedNotesStorage";
+import { printReceivedNote } from "@/lib/printReceivedNote";
+import type { CustomerReceivedNote } from "@/types/receivedNote";
+
+interface InvoiceEditDialogProps {
+  order: AdminOrder | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+interface EditCartItem {
+  product_id: number;
+  product_name: string;
+  icon_url?: string;
+  variant_id?: number;
+  variant_label?: string;
+  quantity: number;
+  unit_price: number;
+  stock_quantity: number;
+  discount: number;
+  discount_type: "amount" | "percent";
+  serial_numbers: string[];
+}
+
+const statusConfig: Record<string, { variant: "default" | "secondary" | "destructive" | "outline" | "warning"; label: string; icon: typeof CheckCircle; color: string }> = {
+  paid:      { variant: "default",     label: "Paid",      icon: CheckCircle,  color: "text-emerald-600 dark:text-emerald-400" },
+  pending:   { variant: "warning",     label: "Pending",   icon: Clock,        color: "text-yellow-600 dark:text-yellow-400" },
+  failed:    { variant: "destructive", label: "Failed",    icon: Ban,          color: "text-destructive" },
+  expired:   { variant: "outline",     label: "Expired",   icon: Ban,          color: "text-muted-foreground" },
+  cancelled: { variant: "secondary",   label: "Cancelled", icon: Ban,          color: "text-muted-foreground" },
+};
+
+export const InvoiceEditDialog = ({ order, open, onOpenChange }: InvoiceEditDialogProps) => {
+  const queryClient = useQueryClient();
+
+  const { data: detailData } = useQuery({
+    queryKey: ["order-detail", order?.id],
+    queryFn: () => adminUsersApi.getOrderDetail(order!.id),
+    enabled: !!order && open,
+  });
+
+  const fullOrder = detailData?.order || order;
+
+  if (!order) return null;
+
+  return (
+    <AdminDialog 
+      open={open} 
+      onOpenChange={onOpenChange} 
+      title={
+        <div className="flex items-center justify-between w-full">
+          <span className="flex items-center gap-2">
+            <Pencil className="w-5 h-5 text-primary" />
+            Edit Invoice #{order.id.slice(0, 8).toUpperCase()}
+          </span>
+          <Badge variant={statusConfig[order.status]?.variant || "secondary"} className="text-xs">
+            {statusConfig[order.status]?.label || order.status}
+          </Badge>
+        </div>
+      } 
+      size="3xl"
+    >
+        <Tabs defaultValue="edit" className="space-y-4">
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 h-auto gap-1 p-1 mt-2">
+            <TabsTrigger value="edit" className="gap-1.5 text-xs py-2"><Pencil className="w-3.5 h-3.5 shrink-0" /> Edit</TabsTrigger>
+            <TabsTrigger value="attachments" className="gap-1.5 text-xs py-2"><Image className="w-3.5 h-3.5 shrink-0" /> Files</TabsTrigger>
+            <TabsTrigger value="payments" className="gap-1.5 text-xs py-2"><CreditCard className="w-3.5 h-3.5 shrink-0" /> Payments</TabsTrigger>
+            <TabsTrigger value="handover" className="gap-1.5 text-xs py-2 truncate"><FileCheck2 className="w-3.5 h-3.5 shrink-0" /> Received Notes</TabsTrigger>
+          </TabsList>
+          <TabsContent value="edit"><EditTab order={fullOrder || order} onClose={() => onOpenChange(false)} /></TabsContent>
+          <TabsContent value="attachments"><AttachmentsTab order={fullOrder || order} /></TabsContent>
+          <TabsContent value="payments"><PaymentsTab order={fullOrder || order} /></TabsContent>
+          <TabsContent value="handover"><HandoverTab order={fullOrder || order} /></TabsContent>
+        </Tabs>
+
+        <Separator />
+        <BottomActions order={order} onClose={() => onOpenChange(false)} />
+    </AdminDialog>
+  );
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const getLineTotal = (item: EditCartItem) => {
+  const gross = item.unit_price * item.quantity;
+  if (item.discount_type === "percent") {
+    return gross * (1 - Math.min(item.discount, 100) / 100);
+  }
+  return Math.max(0, gross - item.discount);
+};
+
+/** Build editable cart from order items (preferred), with legacy fallback */
+const buildCartFromOrder = (order: AdminOrder): EditCartItem[] => {
+  // Use authoritative sale_items data when available
+  if (order.items && order.items.length > 0) {
+    return order.items.map((item) => ({
+      product_id: item.product_id,
+      product_name: item.product_name,
+      variant_id: item.variant_id ?? undefined,
+      variant_label: item.variant_id ? `Variant #${item.variant_id}` : undefined,
+      quantity: Number(item.quantity) || 1,
+      unit_price: Number(item.unit_price) || 0,
+      stock_quantity: 999,
+      discount: Number(item.discount) || 0,
+      discount_type: (item.discount_type as "amount" | "percent") || "amount",
+      serial_numbers: item.serial_numbers
+        ? String(item.serial_numbers).split(",").map(s => s.trim()).filter(Boolean)
+        : [],
+    }));
+  }
+
+  // Legacy fallback for old records without sale_items
+  const totalOriginal = order.original_price ? parseFloat(order.original_price) : (typeof order.amount === "string" ? parseFloat(order.amount as string) : order.amount);
+  const totalDiscount = order.item_discount ? parseFloat(order.item_discount) : 0;
+  const serials = order.serial_number ? order.serial_number.split(",").map(s => s.trim()).filter(Boolean) : [];
+
+  const grouped = new Map<string, number>();
+  const ordered: string[] = [];
+  let totalUnits = 0;
+
+  order.product_name.split(",").map(s => s.trim()).filter(Boolean).forEach((entry) => {
+    const match = entry.match(/^(.+?)\s*[×x]\s*(\d+)$/i);
+    const name = match ? match[1].trim() : entry;
+    const qty = match ? parseInt(match[2], 10) : 1;
+
+    if (!grouped.has(name)) ordered.push(name);
+    grouped.set(name, (grouped.get(name) || 0) + qty);
+    totalUnits += qty;
+  });
+
+  const perUnitPrice = totalUnits > 0 ? totalOriginal / totalUnits : totalOriginal;
+
+  return ordered.map((name, i) => {
+    const qty = grouped.get(name) || 1;
+    return {
+      product_id: i === 0 ? order.product_id : 0,
+      product_name: name,
+      quantity: qty,
+      unit_price: perUnitPrice,
+      stock_quantity: 999,
+      discount: i === 0 ? totalDiscount : 0,
+      discount_type: (order.item_discount_type as "amount" | "percent") || "amount",
+      serial_numbers: i === 0 ? serials : [],
+    };
+  });
+};
+
+// ─── Edit Tab ─────────────────────────────────────────────────────────────────
+const EditTab = ({ order, onClose }: { order: AdminOrder; onClose: () => void }) => {
+  const queryClient = useQueryClient();
+  const [notes, setNotes] = useState(order.notes || "");
+  const [warrantyPeriod, setWarrantyPeriod] = useState(order.warranty_period || "");
+  const [status, setStatus] = useState(order.status);
+  const [txnId, setTxnId] = useState(order.bakong_transaction_id || "");
+
+  // Cart items - initialize from order (aggregate duplicate product names)
+  const [cart, setCart] = useState<EditCartItem[]>(() => buildCartFromOrder(order));
+
+  // Sale-level discount
+  const [saleDiscount, setSaleDiscount] = useState(order.sale_discount ? parseFloat(order.sale_discount) : 0);
+  const [saleDiscountType, setSaleDiscountType] = useState<"amount" | "percent">((order.sale_discount_type as "amount" | "percent") || "amount");
+  const [deliveryFee, setDeliveryFee] = useState(order.delivery_fee ? parseFloat(order.delivery_fee) : 0);
+
+  // Product search
+  const [productSearch, setProductSearch] = useState("");
+  const [searchResults, setSearchResults] = useState<SaleProduct[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+
+  useEffect(() => {
+    setNotes(order.notes || "");
+    setWarrantyPeriod(order.warranty_period || "");
+    setStatus(order.status);
+    setTxnId(order.bakong_transaction_id || "");
+    setCart(buildCartFromOrder(order));
+    setSaleDiscount(order.sale_discount ? parseFloat(order.sale_discount) : 0);
+    setSaleDiscountType((order.sale_discount_type as "amount" | "percent") || "amount");
+    setDeliveryFee(order.delivery_fee ? parseFloat(order.delivery_fee) : 0);
+  }, [order]);
+
+  // Calculations
+  const subtotal = cart.reduce((s, c) => s + getLineTotal(c), 0);
+  const saleDiscountAmount = saleDiscountType === "percent"
+    ? subtotal * Math.min(saleDiscount, 100) / 100
+    : Math.min(saleDiscount, subtotal);
+  const grandTotal = Math.max(0, subtotal - saleDiscountAmount) + deliveryFee;
+
+  // Search products
+  const handleSearchProducts = useCallback(async (q: string) => {
+    setProductSearch(q);
+    if (q.length < 1) { setSearchResults([]); return; }
+    setSearchLoading(true);
+    try {
+      const res = await salesApi.searchProducts(q);
+      setSearchResults(res.products);
+    } catch { /* ignore */ }
+    setSearchLoading(false);
+  }, []);
+
+  // Add product to cart
+  const addToCart = (product: SaleProduct, variantId?: number) => {
+    const variant = variantId ? product.variants.find(v => v.id === variantId) : null;
+    const stock = variant ? (variant.stock_quantity ?? 0) : (product.variants.reduce((s, v) => s + v.stock_quantity, 0));
+    const existing = cart.find(c => c.product_id === product.id && c.variant_id === variantId);
+    const currentQty = existing ? existing.quantity : 0;
+
+    if (stock <= 0) {
+      toast.error(`${product.name} is out of stock`);
+      return;
+    }
+    if (currentQty >= stock) {
+      toast.error(`Only ${stock} in stock for ${product.name}`);
+      return;
+    }
+
+    if (existing) {
+      setCart(cart.map(c =>
+        c.product_id === product.id && c.variant_id === variantId
+          ? { ...c, quantity: c.quantity + 1 }
+          : c
+      ));
+    } else {
+      const price = variant ? Number(variant.price_adjustment || 0) : (product.variants.length > 0 ? Number(product.variants[0].price_adjustment || 0) : 0);
+      const variantLabel = variant ? Object.values(variant.combination).join(" / ") : undefined;
+      setCart([...cart, {
+        product_id: product.id,
+        product_name: product.name,
+        icon_url: product.icon_url,
+        variant_id: variantId,
+        variant_label: variantLabel,
+        quantity: 1,
+        unit_price: price,
+        stock_quantity: stock,
+        discount: 0,
+        discount_type: "amount",
+        serial_numbers: [],
+      }]);
+    }
+    setProductSearch("");
+    setSearchResults([]);
+  };
+
+  const updateQty = (idx: number, delta: number) => {
+    setCart(cart.map((c, i) => {
+      if (i !== idx) return c;
+      const newQty = Math.max(1, c.quantity + delta);
+      if (delta > 0 && newQty > c.stock_quantity) {
+        toast.error(`Only ${c.stock_quantity} in stock for ${c.product_name}`);
+        return c;
+      }
+      const trimmedSerials = c.serial_numbers.slice(0, newQty);
+      return { ...c, quantity: newQty, serial_numbers: trimmedSerials };
+    }));
+  };
+
+  const addSerialToItem = (cartIdx: number, value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const allSerials = cart.flatMap(c => c.serial_numbers);
+    if (allSerials.includes(trimmed)) {
+      toast.error(`Serial number "${trimmed}" is already added`);
+      return;
+    }
+    setCart(cart.map((c, i) => {
+      if (i !== cartIdx) return c;
+      if (c.serial_numbers.length >= c.quantity) return c;
+      return { ...c, serial_numbers: [...c.serial_numbers, trimmed] };
+    }));
+  };
+
+  const removeSerialFromItem = (cartIdx: number, serialIdx: number) => {
+    setCart(cart.map((c, i) => {
+      if (i !== cartIdx) return c;
+      return { ...c, serial_numbers: c.serial_numbers.filter((_, si) => si !== serialIdx) };
+    }));
+  };
+
+  const updateItemDiscount = (idx: number, value: number, type: "amount" | "percent") => {
+    setCart(cart.map((c, i) => i === idx ? { ...c, discount: value, discount_type: type } : c));
+  };
+
+  const updateItemPrice = (idx: number, price: number) => {
+    setCart(cart.map((c, i) => i === idx ? { ...c, unit_price: price } : c));
+  };
+
+  const removeFromCart = (idx: number) => {
+    if (cart.length <= 1) { toast.error("Must have at least one item"); return; }
+    setCart(cart.filter((_, i) => i !== idx));
+  };
+
+  const [showStockConfirm, setShowStockConfirm] = useState(false);
+  const [stockResult, setStockResult] = useState<StockAdjustmentResult | null>(null);
+  const [pendingPayload, setPendingPayload] = useState<Partial<AdminOrder> | null>(null);
+  const [statusChangeTarget, setStatusChangeTarget] = useState<AdminOrder["status"] | null>(null);
+
+  const updateMutation = useMutation({
+    mutationFn: (data: Partial<AdminOrder>) => adminUsersApi.updateOrder(order.id, data),
+    onSuccess: () => {
+      toast.success("Invoice updated successfully");
+      queryClient.invalidateQueries({ queryKey: ["admin-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-all-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-sales-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+      queryClient.invalidateQueries({ queryKey: ["order-detail", order.id] });
+      setShowStockConfirm(false);
+      setStatusChangeTarget(null);
+      onClose();
+    },
+    onError: (e: Error) => toast.error(e.message || "Failed to update"),
+  });
+
+  const handleSave = () => {
+    if (cart.length === 0) { toast.error("Add at least one item"); return; }
+
+    // For single item, map directly. For multi-item, combine names & totals.
+    const firstItem = cart[0];
+    const combinedName = cart.map(c => c.quantity > 1 ? `${c.product_name} ×${c.quantity}` : c.product_name).join(", ");
+    const totalOriginal = cart.reduce((s, c) => s + c.unit_price * c.quantity, 0);
+    const totalItemDiscount = totalOriginal - subtotal;
+
+    // Build items array for backend stock management
+    const items = cart.map(c => ({
+      product_id: c.product_id,
+      variant_id: c.variant_id || undefined,
+      quantity: c.quantity,
+      unit_price: c.unit_price,
+      serial_numbers: c.serial_numbers.join(", ") || undefined,
+      discount: c.discount || 0,
+      discount_type: c.discount_type || "amount",
+    }));
+
+    const payload: Partial<AdminOrder> = {
+      product_name: combinedName,
+      product_id: firstItem.product_id as any,
+      serial_number: firstItem.serial_numbers.join(", ") || undefined,
+      notes: notes || undefined,
+      warranty_period: warrantyPeriod || undefined,
+      status,
+      amount: grandTotal as any,
+      original_price: totalOriginal.toFixed(2) as any,
+      item_discount: totalItemDiscount.toFixed(2) as any,
+      item_discount_type: "amount" as any,
+      sale_discount: saleDiscount > 0 ? saleDiscount.toString() as any : "0" as any,
+      sale_discount_type: saleDiscountType as any,
+      delivery_fee: deliveryFee > 0 ? deliveryFee.toString() as any : "0" as any,
+      bakong_transaction_id: txnId || undefined,
+      items: items as any,
+    };
+
+    // Calculate stock changes and show confirmation
+    const result = calculateStockAdjustments(order, cart, status);
+    setStockResult(result);
+    setPendingPayload(payload);
+    setShowStockConfirm(true);
+  };
+
+  const handleConfirmSave = () => {
+    if (pendingPayload) {
+      updateMutation.mutate(pendingPayload);
+    }
+  };
+
+  const quickStatusUpdate = (newStatus: AdminOrder["status"]) => {
+    setStatusChangeTarget(newStatus);
+  };
+
+  const handleConfirmStatusChange = () => {
+    if (statusChangeTarget) {
+      updateMutation.mutate({ status: statusChangeTarget });
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Quick Status Actions */}
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Quick Actions</p>
+        <div className="flex flex-wrap gap-2">
+          {order.status !== 'paid' && (
+            <Button variant="outline" size="sm" className="gap-1.5 text-emerald-600 border-emerald-200 hover:bg-emerald-50 dark:hover:bg-emerald-500/10" onClick={() => quickStatusUpdate('paid')} disabled={updateMutation.isPending}>
+              <CheckCircle className="w-3.5 h-3.5" /> Mark as Paid
+            </Button>
+          )}
+          {order.status !== 'pending' && (
+            <Button variant="outline" size="sm" className="gap-1.5 text-amber-600 border-amber-200 hover:bg-amber-50 dark:hover:bg-amber-500/10" onClick={() => quickStatusUpdate('pending')} disabled={updateMutation.isPending}>
+              <Clock className="w-3.5 h-3.5" /> Set Pending
+            </Button>
+          )}
+          {order.status !== 'failed' && (
+            <Button variant="outline" size="sm" className="gap-1.5 text-destructive" onClick={() => quickStatusUpdate('failed')} disabled={updateMutation.isPending}>
+              <Ban className="w-3.5 h-3.5" /> Mark Failed
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <Separator />
+
+      {/* Status */}
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">Status</label>
+        <Select value={status} onValueChange={(v) => setStatus(v as AdminOrder["status"])}>
+          <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="pending">Pending</SelectItem>
+            <SelectItem value="paid">Paid</SelectItem>
+            <SelectItem value="failed">Failed</SelectItem>
+            <SelectItem value="expired">Expired</SelectItem>
+            <SelectItem value="cancelled">Cancelled</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <Separator />
+
+      {/* ─── Sale Items ─── */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Sale Items ({cart.length})</p>
+        </div>
+
+        {/* Product Search to Add */}
+        <div className="relative mb-3">
+          <Package className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Input
+            placeholder="Search & add products..."
+            value={productSearch}
+            onChange={(e) => handleSearchProducts(e.target.value)}
+            className="pl-9 h-9 text-sm"
+          />
+          {searchLoading && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+          {searchResults.length > 0 && (
+            <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+              {searchResults.map(p => (
+                <div key={p.id}>
+                  {p.variants.length > 0 ? (
+                    p.variants.map(v => {
+                      const label = Object.values(v.combination).join(" / ");
+                      const price = Number(v.price_adjustment || 0);
+                      return (
+                        <button key={`${p.id}-${v.id}`} className="w-full text-left px-3 py-2 hover:bg-muted text-sm flex items-center gap-3 transition-colors" onClick={() => addToCart(p, v.id)}>
+                          {p.icon_url && <img src={p.icon_url} className="w-8 h-8 rounded object-cover shrink-0" alt="" />}
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-foreground truncate">{p.name}</p>
+                            <p className="text-xs text-muted-foreground">{label} · Stock: {v.stock_quantity}</p>
+                          </div>
+                          <span className="text-xs font-semibold text-foreground">${price.toFixed(2)}</span>
+                        </button>
+                      );
+                    })
+                  ) : (
+                          <button className="w-full text-left px-3 py-2 hover:bg-muted text-sm flex items-center gap-3 transition-colors" onClick={() => addToCart(p, p.variants.length > 0 ? p.variants[0].id : undefined)}>
+                      {p.icon_url && <img src={p.icon_url} className="w-8 h-8 rounded object-cover shrink-0" alt="" />}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-foreground truncate">{p.name}</p>
+                        <p className="text-xs text-muted-foreground">Stock: {p.variants.reduce((s, v) => s + v.stock_quantity, 0)}</p>
+                      </div>
+                      <span className="text-xs font-semibold text-foreground">${p.variants.length > 0 ? Number(p.variants[0].price_adjustment).toFixed(2) : '0.00'}</span>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Cart Items */}
+        <div className="border border-border rounded-lg overflow-hidden">
+          <div className="grid grid-cols-[1fr_70px_90px_70px_28px] gap-1 px-3 py-2 bg-muted/50 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+            <span>Product</span>
+            <span className="text-center">Qty</span>
+            <span className="text-center">Discount</span>
+            <span className="text-right">Total</span>
+            <span />
+          </div>
+          {cart.map((item, idx) => {
+            const lineTotal = getLineTotal(item);
+            const overStock = item.quantity > item.stock_quantity && item.stock_quantity < 999;
+            return (
+              <div key={idx} className="border-t border-border/50">
+                <div className="grid grid-cols-[1fr_70px_90px_70px_28px] gap-1 px-3 py-2.5 items-center">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      {item.icon_url && <img src={item.icon_url} className="w-7 h-7 rounded object-cover shrink-0" alt="" />}
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-foreground truncate">{item.product_name}</p>
+                        {item.variant_label && <p className="text-[10px] text-muted-foreground">{item.variant_label}</p>}
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-muted-foreground">${item.unit_price.toFixed(2)} each</span>
+                          {item.stock_quantity < 999 && (
+                            <span className={`text-[10px] ${overStock ? "text-destructive font-semibold" : "text-muted-foreground"}`}>
+                              Stock: {item.stock_quantity}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-0.5 justify-center">
+                    <Button size="icon" variant="outline" className="h-5 w-5" onClick={() => updateQty(idx, -1)}><Minus className="w-2.5 h-2.5" /></Button>
+                    <span className={`text-xs font-medium w-5 text-center ${overStock ? "text-destructive" : ""}`}>{item.quantity}</span>
+                    <Button size="icon" variant="outline" className="h-5 w-5" onClick={() => updateQty(idx, 1)}><Plus className="w-2.5 h-2.5" /></Button>
+                  </div>
+                  <div className="flex items-center gap-0.5">
+                    <Input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={item.discount || ""}
+                      onChange={e => updateItemDiscount(idx, parseInt(e.target.value) || 0, item.discount_type)}
+                      className="h-6 text-[11px] px-1.5 w-12"
+                      placeholder="0"
+                    />
+                    <button
+                      onClick={() => updateItemDiscount(idx, item.discount, item.discount_type === "amount" ? "percent" : "amount")}
+                      className="h-6 w-6 shrink-0 rounded border border-input flex items-center justify-center text-[10px] font-bold text-muted-foreground hover:bg-muted transition-colors"
+                      title={item.discount_type === "amount" ? "Switch to %" : "Switch to $"}
+                    >
+                      {item.discount_type === "percent" ? "%" : "$"}
+                    </button>
+                  </div>
+                  <p className="text-sm font-semibold text-right tabular-nums">${lineTotal.toFixed(2)}</p>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-6 w-6"
+                    onClick={() => removeFromCart(idx)}
+                    disabled={cart.length <= 1}
+                  >
+                    <Trash2 className="w-3 h-3 text-destructive" />
+                  </Button>
+                </div>
+                {/* Serial number tag input */}
+                <div className="px-3 pb-2">
+                  <div className="flex flex-wrap gap-1 items-center p-1.5 rounded border border-border bg-background min-h-[28px]">
+                    {item.serial_numbers.map((sn, snIdx) => (
+                      <span key={snIdx} className="inline-flex items-center gap-0.5 bg-muted text-foreground text-[11px] px-1.5 py-0.5 rounded font-mono">
+                        {sn}
+                        <button type="button" onClick={() => removeSerialFromItem(idx, snIdx)} className="hover:text-destructive transition-colors"><X className="w-3 h-3" /></button>
+                      </span>
+                    ))}
+                    {item.serial_numbers.length < item.quantity && (
+                      <input
+                        className="flex-1 min-w-[80px] bg-transparent text-[11px] outline-none placeholder:text-muted-foreground font-mono"
+                        placeholder={`Add S/N (${item.serial_numbers.length}/${item.quantity})`}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            addSerialToItem(idx, e.currentTarget.value);
+                            e.currentTarget.value = "";
+                          }
+                        }}
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Sale Discount */}
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">Sale Discount</label>
+        <div className="flex items-center gap-2 mt-1">
+          <Input
+            type="number"
+            step="1"
+            min="0"
+            value={saleDiscount || ""}
+            onChange={(e) => setSaleDiscount(parseInt(e.target.value) || 0)}
+            className="h-9 text-sm flex-1"
+            placeholder="0"
+          />
+          <button
+            onClick={() => setSaleDiscountType(saleDiscountType === "amount" ? "percent" : "amount")}
+            className="h-9 w-9 shrink-0 rounded-md border border-input flex items-center justify-center text-xs font-bold text-muted-foreground hover:bg-muted transition-colors"
+            title={saleDiscountType === "amount" ? "Switch to %" : "Switch to $"}
+          >
+            {saleDiscountType === "percent" ? <Percent className="w-3.5 h-3.5" /> : <DollarSign className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Delivery Fee */}
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">Delivery Fee</label>
+        <div className="flex items-center gap-2 mt-1">
+          <Input
+            type="number"
+            step="0.01"
+            min="0"
+            value={deliveryFee || ""}
+            onChange={(e) => setDeliveryFee(parseFloat(e.target.value) || 0)}
+            className="h-9 text-sm flex-1"
+            placeholder="0"
+          />
+        </div>
+      </div>
+
+      {/* Price Summary */}
+      <Card>
+        <CardContent className="p-4 space-y-1.5">
+          <div className="flex justify-between text-sm text-muted-foreground">
+            <span>Subtotal ({cart.length} item{cart.length > 1 ? "s" : ""})</span>
+            <span className="tabular-nums">${subtotal.toFixed(2)}</span>
+          </div>
+          {saleDiscount > 0 && (
+            <div className="flex justify-between text-sm text-destructive">
+              <span>Sale Discount ({saleDiscountType === "percent" ? `${saleDiscount}%` : `$${saleDiscount.toFixed(2)}`})</span>
+              <span className="tabular-nums">-${saleDiscountAmount.toFixed(2)}</span>
+            </div>
+          )}
+          {deliveryFee > 0 && (
+            <div className="flex justify-between text-sm text-muted-foreground">
+              <span>Delivery Fee</span>
+              <span className="tabular-nums">+${deliveryFee.toFixed(2)}</span>
+            </div>
+          )}
+          <Separator />
+          <div className="flex justify-between font-bold text-base">
+            <span>Grand Total</span>
+            <span className="tabular-nums">${grandTotal.toFixed(2)} {order.currency}</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      {/* Transaction ID */}
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">Transaction ID</label>
+        <Input value={txnId} onChange={(e) => setTxnId(e.target.value)} className="mt-1.5" placeholder="Optional" />
+      </div>
+
+      {/* Warranty Period */}
+      <div>
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-medium text-muted-foreground">Warranty Period</label>
+          {order.warranty_period && (() => {
+            const ws = getWarrantyStatus(order.warranty_period, order.created_at);
+            return ws ? (
+              <Badge variant={getWarrantyBadgeVariant(ws)} className="text-[10px] px-1.5 py-0">
+                {ws.label}{ws.expiryDate ? ` · Exp ${ws.expiryDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}` : ''}
+              </Badge>
+            ) : null;
+          })()}
+        </div>
+        <WarrantySelectEdit value={warrantyPeriod} onChange={setWarrantyPeriod} />
+      </div>
+
+      {/* Notes */}
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">Notes</label>
+        <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="mt-1.5" placeholder="Add notes..." />
+      </div>
+
+      <Button className="w-full gap-2" onClick={handleSave} disabled={updateMutation.isPending}>
+        {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Pencil className="w-4 h-4" />}
+        Save Changes
+      </Button>
+
+      {/* Sale Update & Stock Adjustment Confirmation Dialog */}
+      <SaleUpdateConfirmDialog
+        open={showStockConfirm}
+        onOpenChange={setShowStockConfirm}
+        stockResult={stockResult}
+        onConfirm={handleConfirmSave}
+        isPending={updateMutation.isPending}
+        orderNumber={order.id.slice(0, 8).toUpperCase()}
+        customerName={order.customer?.full_name || order.user?.full_name || "Walk-in Customer"}
+      />
+
+      {/* Quick Status Change Stock Confirmation Dialog */}
+      <StatusChangeConfirmDialog
+        order={order}
+        newStatus={statusChangeTarget}
+        open={!!statusChangeTarget}
+        onOpenChange={(open) => { if (!open) setStatusChangeTarget(null); }}
+        onConfirm={handleConfirmStatusChange}
+        isPending={updateMutation.isPending}
+      />
+    </div>
+  );
+};
+
+// ─── Attachments Tab ──────────────────────────────────────────────────────────
+const AttachmentsTab = ({ order }: { order: AdminOrder }) => {
+  const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [selectedGalleryIdx, setSelectedGalleryIdx] = useState(0);
+
+  const { data } = useQuery({
+    queryKey: ["order-detail", order.id],
+    queryFn: () => adminUsersApi.getOrderDetail(order.id),
+  });
+
+  const attachments = data?.order?.attachments || order.attachments || [];
+  const imageAttachments = attachments.filter((a) => a.file_type === 'image');
+
+  const uploadMutation = useMutation({
+    mutationFn: (file: File) => adminUsersApi.uploadAttachment(order.id, file),
+    onSuccess: () => {
+      toast.success("Image attached");
+      queryClient.invalidateQueries({ queryKey: ["order-detail", order.id] });
+    },
+    onError: (e: Error) => toast.error(e.message || "Upload failed"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (attachmentId: number) => adminUsersApi.deleteAttachment(order.id, attachmentId),
+    onSuccess: () => {
+      toast.success("Attachment removed");
+      queryClient.invalidateQueries({ queryKey: ["order-detail", order.id] });
+    },
+    onError: () => toast.error("Failed to remove"),
+  });
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      uploadMutation.mutate(file);
+      e.target.value = "";
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Fullscreen Lightbox */}
+      {previewIndex !== null && imageAttachments[previewIndex] && (
+        <div
+          className="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center"
+          onClick={() => setPreviewIndex(null)}
+        >
+          {imageAttachments.length > 1 && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute left-4 top-1/2 -translate-y-1/2 text-white/70 hover:text-white hover:bg-white/10 z-10"
+              onClick={(e) => { e.stopPropagation(); setPreviewIndex((previewIndex - 1 + imageAttachments.length) % imageAttachments.length); }}
+            >
+              <ChevronLeft className="w-8 h-8" />
+            </Button>
+          )}
+          <img
+            src={imageAttachments[previewIndex].file_url}
+            alt="Preview"
+            className="max-w-[90vw] max-h-[85vh] object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+          {imageAttachments.length > 1 && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-white/70 hover:text-white hover:bg-white/10 z-10"
+              onClick={(e) => { e.stopPropagation(); setPreviewIndex((previewIndex + 1) % imageAttachments.length); }}
+            >
+              <ChevronRight className="w-8 h-8" />
+            </Button>
+          )}
+          <span className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70 text-sm">
+            {previewIndex + 1} / {imageAttachments.length}
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="absolute top-4 right-4 text-white/70 hover:text-white hover:bg-white/10"
+            onClick={() => setPreviewIndex(null)}
+          >
+            <X className="w-5 h-5" />
+          </Button>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium">{attachments.length} attachment(s)</p>
+        <Button variant="outline" size="sm" className="gap-1.5" onClick={() => fileInputRef.current?.click()} disabled={uploadMutation.isPending}>
+          {uploadMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+          Upload
+        </Button>
+        <input ref={fileInputRef} type="file" accept="image/*,.pdf" className="hidden" onChange={handleFileSelect} />
+      </div>
+
+      {attachments.length === 0 ? (
+        <div className="text-center py-8 border border-dashed border-border rounded-lg">
+          <Image className="w-8 h-8 text-muted-foreground/40 mx-auto mb-2" />
+          <p className="text-sm text-muted-foreground">No attachments yet</p>
+          <p className="text-xs text-muted-foreground mt-1">Upload receipt photos or documents</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {/* Main Gallery Preview */}
+          {imageAttachments.length > 0 && (
+            <div className="space-y-2">
+              {/* Main Image */}
+              <div
+                className="relative aspect-video bg-muted rounded-xl overflow-hidden cursor-pointer group"
+                onClick={() => setPreviewIndex(selectedGalleryIdx)}
+              >
+                <img
+                  src={imageAttachments[selectedGalleryIdx]?.file_url}
+                  alt={imageAttachments[selectedGalleryIdx]?.file_name}
+                  className="w-full h-full object-contain"
+                />
+                {/* Nav arrows */}
+                {imageAttachments.length > 1 && (
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setSelectedGalleryIdx((selectedGalleryIdx - 1 + imageAttachments.length) % imageAttachments.length); }}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 p-1.5 bg-black/50 hover:bg-black/70 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setSelectedGalleryIdx((selectedGalleryIdx + 1) % imageAttachments.length); }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 bg-black/50 hover:bg-black/70 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </>
+                )}
+                {/* Counter */}
+                {imageAttachments.length > 1 && (
+                  <div className="absolute bottom-2 right-2 px-2 py-0.5 bg-black/60 rounded-md text-white text-xs">
+                    {selectedGalleryIdx + 1} / {imageAttachments.length}
+                  </div>
+                )}
+              </div>
+
+              {/* Thumbnail Strip */}
+              {imageAttachments.length > 1 && (
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {imageAttachments.map((att, idx) => (
+                    <button
+                      key={att.id}
+                      onClick={() => setSelectedGalleryIdx(idx)}
+                      className={`relative flex-shrink-0 rounded-lg overflow-hidden border-2 transition-all ${
+                        idx === selectedGalleryIdx
+                          ? 'border-primary ring-2 ring-primary/30'
+                          : 'border-transparent hover:border-muted-foreground/50'
+                      }`}
+                    >
+                      <img src={att.file_url} alt={att.file_name} className="w-16 h-12 object-cover" />
+                      {/* Delete button on thumbnail */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteMutation.mutate(att.id); }}
+                        className="absolute top-0.5 right-0.5 p-0.5 bg-destructive text-destructive-foreground rounded-full opacity-0 group-hover:opacity-100 hover:!opacity-100 transition-opacity"
+                        disabled={deleteMutation.isPending}
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Non-image files list */}
+          {attachments.filter(a => a.file_type !== 'image').length > 0 && (
+            <div className="space-y-2">
+              {attachments.filter(a => a.file_type !== 'image').map((att) => (
+                <div key={att.id} className="relative group flex items-center gap-3 p-2.5 border border-border rounded-lg hover:bg-muted/30 transition-colors">
+                  <a href={att.file_url} target="_blank" rel="noopener noreferrer" className="p-2 bg-muted rounded-lg">
+                    <FileText className="w-5 h-5 text-muted-foreground" />
+                  </a>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium truncate">{att.file_name}</p>
+                    <p className="text-[10px] text-muted-foreground">{att.file_size ? `${(att.file_size / 1024).toFixed(1)} KB` : ""}</p>
+                  </div>
+                  <Button variant="destructive" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => deleteMutation.mutate(att.id)} disabled={deleteMutation.isPending}>
+                    <X className="w-3 h-3" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Payments Tab ─────────────────────────────────────────────────────────────
+const PaymentsTab = ({ order }: { order: AdminOrder }) => {
+  const queryClient = useQueryClient();
+  const [showAdd, setShowAdd] = useState(false);
+  const [payAmount, setPayAmount] = useState("");
+  const [payMethod, setPayMethod] = useState("cash");
+  const [payRef, setPayRef] = useState("");
+  const [payNote, setPayNote] = useState("");
+
+  const { data } = useQuery({
+    queryKey: ["order-detail", order.id],
+    queryFn: () => adminUsersApi.getOrderDetail(order.id),
+  });
+
+  const payments = data?.order?.payments || order.payments || [];
+  const totalPaid = payments.reduce((s, p) => s + (typeof p.amount === "string" ? parseFloat(p.amount) : p.amount), 0);
+  const orderAmount = typeof order.amount === "string" ? parseFloat(order.amount as string) : order.amount;
+  const remaining = orderAmount - totalPaid;
+
+  const addMutation = useMutation({
+    mutationFn: (data: { amount: number; method: string; reference?: string; note?: string }) =>
+      adminUsersApi.addPayment(order.id, data),
+    onSuccess: () => {
+      toast.success("Payment recorded");
+      queryClient.invalidateQueries({ queryKey: ["order-detail", order.id] });
+      queryClient.invalidateQueries({ queryKey: ["admin-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-sales-dashboard"] });
+      setShowAdd(false);
+      setPayAmount("");
+      setPayRef("");
+      setPayNote("");
+    },
+    onError: (e: Error) => toast.error(e.message || "Failed"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (paymentId: number) => adminUsersApi.deletePayment(order.id, paymentId),
+    onSuccess: () => {
+      toast.success("Payment removed");
+      queryClient.invalidateQueries({ queryKey: ["order-detail", order.id] });
+    },
+    onError: () => toast.error("Failed to remove"),
+  });
+
+  const handleAdd = () => {
+    const amt = parseFloat(payAmount);
+    if (!amt || amt <= 0) { toast.error("Enter a valid amount"); return; }
+    addMutation.mutate({ amount: amt, method: payMethod, reference: payRef || undefined, note: payNote || undefined });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-muted/50 rounded-lg p-3 text-center">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Total</p>
+          <p className="text-lg font-bold">${orderAmount.toFixed(2)}</p>
+        </div>
+        <div className="bg-emerald-500/10 rounded-lg p-3 text-center">
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Paid</p>
+          <p className="text-lg font-bold text-emerald-600 dark:text-emerald-400">${totalPaid.toFixed(2)}</p>
+        </div>
+        <div className={`rounded-lg p-3 text-center ${remaining > 0 ? "bg-destructive/10" : "bg-emerald-500/10"}`}>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Remaining</p>
+          <p className={`text-lg font-bold ${remaining > 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400"}`}>${remaining.toFixed(2)}</p>
+        </div>
+      </div>
+
+      {payments.length > 0 && (
+        <div className="space-y-2">
+          {payments.map((p) => {
+            const pAmt = typeof p.amount === "string" ? parseFloat(p.amount) : p.amount;
+            return (
+              <div key={p.id} className="flex items-center justify-between border border-border rounded-lg p-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary" className="text-xs">{p.method}</Badge>
+                    <span className="font-semibold tabular-nums">${pAmt.toFixed(2)}</span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    {p.reference && <span className="text-xs text-muted-foreground font-mono">{p.reference}</span>}
+                    <span className="text-xs text-muted-foreground">{new Date(p.paid_at).toLocaleDateString()}</span>
+                  </div>
+                  {p.note && <p className="text-xs text-muted-foreground mt-1">{p.note}</p>}
+                </div>
+                <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={() => deleteMutation.mutate(p.id)} disabled={deleteMutation.isPending}>
+                  <Trash2 className="w-3.5 h-3.5 text-destructive" />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {!showAdd ? (
+        <Button variant="outline" className="w-full gap-2" onClick={() => { setShowAdd(true); setPayAmount(remaining > 0 ? remaining.toFixed(2) : ""); }}>
+          <Plus className="w-4 h-4" /> Add Payment
+        </Button>
+      ) : (
+        <div className="border border-border rounded-lg p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Amount ($)</label>
+              <Input type="number" step="0.01" min="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className="mt-1" placeholder={remaining > 0 ? remaining.toFixed(2) : "0.00"} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Method</label>
+              <Select value={payMethod} onValueChange={setPayMethod}>
+                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="khqr">KHQR</SelectItem>
+                  <SelectItem value="aba">ABA</SelectItem>
+                  <SelectItem value="wing">Wing</SelectItem>
+                  <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Reference (optional)</label>
+            <Input value={payRef} onChange={(e) => setPayRef(e.target.value)} className="mt-1" placeholder="Transaction ID..." />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Note (optional)</label>
+            <Input value={payNote} onChange={(e) => setPayNote(e.target.value)} className="mt-1" placeholder="Payment note..." />
+          </div>
+          <div className="flex gap-2">
+            <Button className="flex-1 gap-2" onClick={handleAdd} disabled={addMutation.isPending}>
+              {addMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <DollarSign className="w-4 h-4" />}
+              Record Payment
+            </Button>
+            <Button variant="outline" onClick={() => setShowAdd(false)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Handover / Received Notes Tab ──────────────────────────────────────────
+const HandoverTab = ({ order }: { order: AdminOrder }) => {
+  const [showNoteDialog, setShowNoteDialog] = useState(false);
+  const [notes, setNotes] = useState<CustomerReceivedNote[]>(() => getReceivedNotesForOrder(order.id));
+  const [, setRev] = useState(0);
+
+  useEffect(() => {
+    return subscribeToReceivedNotes(() => {
+      setNotes(getReceivedNotesForOrder(order.id));
+      setRev((r) => r + 1);
+    });
+  }, [order.id]);
+
+  const delivery = getOrderDeliveryStatus(order);
+
+  return (
+    <div className="space-y-4 py-1">
+      {/* Handover summary banner */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 rounded-xl border border-border/70 bg-muted/20">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Handover Status:</span>
+            {delivery.status === "full" && (
+              <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-xs">
+                <CheckCircle className="w-3.5 h-3.5 mr-1" />
+                All Items Received ({delivery.totalReceived}/{delivery.totalOrdered})
+              </Badge>
+            )}
+            {delivery.status === "partial" && (
+              <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 text-xs">
+                <AlertTriangle className="w-3.5 h-3.5 mr-1" />
+                Partial ({delivery.totalReceived}/{delivery.totalOrdered} received)
+              </Badge>
+            )}
+            {delivery.status === "none" && (
+              <Badge variant="outline" className="text-xs text-muted-foreground">
+                <Clock className="w-3.5 h-3.5 mr-1" />
+                No Items Handed Over Yet
+              </Badge>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            {delivery.status === "full"
+              ? "All ordered items have been inspected and accepted with customer signature."
+              : `${delivery.totalPending} pending item(s) awaiting delivery or customer handover.`}
+          </p>
+        </div>
+
+        <Button
+          type="button"
+          onClick={() => setShowNoteDialog(true)}
+          className="gap-1.5 h-8 text-xs font-bold"
+        >
+          <FileCheck2 className="w-3.5 h-3.5" />
+          Sign New Received Note
+        </Button>
+      </div>
+
+      {/* List of signed notes */}
+      <div className="space-y-3">
+        <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+          Signed Handover Receipts ({notes.length})
+        </h4>
+
+        {notes.length === 0 ? (
+          <div className="text-center py-8 rounded-xl border border-dashed border-border/70 text-muted-foreground text-xs space-y-1">
+            <FileCheck2 className="w-7 h-7 mx-auto opacity-40 mb-2" />
+            <p className="font-semibold text-foreground">No Received Notes yet</p>
+            <p>Click &ldquo;Sign New Received Note&rdquo; above to record full or partial customer receipt with signature.</p>
+          </div>
+        ) : (
+          notes.map((note) => (
+            <div
+              key={note.id}
+              className="p-3.5 rounded-xl border border-border/70 bg-card space-y-2.5 text-xs shadow-2xs"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-bold text-foreground">#{note.id}</span>
+                  <Badge
+                    className={
+                      note.receipt_type === "partial"
+                        ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                        : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                    }
+                  >
+                    {note.receipt_type === "partial" ? "Partial Handover" : "Full Handover"}
+                  </Badge>
+                </div>
+                <span className="text-muted-foreground">
+                  {new Date(note.created_at).toLocaleString()}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-muted/20 p-2 rounded-lg text-muted-foreground">
+                <div>
+                  <span className="font-medium text-foreground">Receiver:</span> {note.receiver_name}
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">Items:</span> {note.total_received_in_this_note} (Pending: {note.total_pending_remaining})
+                </div>
+                <div>
+                  <span className="font-medium text-foreground">By:</span> {note.delivered_by_name}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-1">
+                {note.customer_signature ? (
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1 text-[11px]">
+                    ✓ Customer Signature Verified
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground text-[11px]">No signature</span>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => printReceivedNote(note)}
+                  className="h-7 text-xs gap-1"
+                >
+                  <Printer className="w-3 h-3" /> Print Note
+                </Button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <CustomerReceivedNoteDialog
+        order={order}
+        open={showNoteDialog}
+        onOpenChange={setShowNoteDialog}
+      />
+    </div>
+  );
+};
+
+// ─── Bottom Actions ───────────────────────────────────────────────────────────
+const BottomActions = ({ order, onClose }: { order: AdminOrder; onClose: () => void }) => {
+  const queryClient = useQueryClient();
+  const { data: warrantiesData } = useQuery({
+    queryKey: ["warranties"],
+    queryFn: () => warrantyApi.getAll(),
+  });
+  const warrantiesList = warrantiesData?.warranties || [];
+
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showReceivedNoteDialog, setShowReceivedNoteDialog] = useState(false);
+
+  const deleteMutation = useMutation({
+    mutationFn: () => adminUsersApi.deleteOrder(order.id),
+    onSuccess: () => {
+      toast.success("Invoice deleted and stock restored");
+      queryClient.invalidateQueries({ queryKey: ["admin-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-all-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-sales-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+      setShowDeleteConfirm(false);
+      onClose();
+    },
+    onError: (e: Error) => toast.error(e.message || "Failed to delete"),
+  });
+
+  const handlePrint = async () => {
+    const branding = await getInvoiceBranding();
+    const amount = typeof order.amount === "string" ? parseFloat(order.amount as string) : order.amount;
+    const originalPrice = order.original_price ? parseFloat(order.original_price) : amount;
+    const itemDiscount = order.item_discount ? parseFloat(order.item_discount) : 0;
+    const saleDiscountVal = order.sale_discount ? parseFloat(order.sale_discount) : 0;
+    const itemDiscountLabel = order.item_discount_type === 'percent' ? `${itemDiscount}%` : `$${itemDiscount.toFixed(2)}`;
+    const saleDiscountLabel = order.sale_discount_type === 'percent' ? `${saleDiscountVal}%` : `$${saleDiscountVal.toFixed(2)}`;
+
+    const htmlContent = `<!DOCTYPE html><html><head><title>Invoice #${order.id.slice(0, 8).toUpperCase()}</title>
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Inter',system-ui,sans-serif;max-width:760px;margin:0 auto;padding:48px 40px;color:#111827;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+        .header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:32px;border-bottom:1px solid #e5e7eb}
+        .brand{display:flex;align-items:center;gap:14px}
+        .brand-icon{width:44px;height:44px;border-radius:10px;overflow:hidden}
+        .brand-icon img{width:100%;height:100%;object-fit:contain}
+        .brand-name{font-size:20px;font-weight:700;color:#111827}
+        .brand-sub{font-size:12px;color:#6b7280;margin-top:2px}
+        .meta{text-align:right}
+        .invoice-badge{display:inline-flex;background:#eff6ff;color:${branding.primary_color};font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;padding:6px 14px;border-radius:6px}
+        .invoice-number{font-size:22px;font-weight:700;margin-top:8px;font-variant-numeric:tabular-nums}
+        .invoice-date{font-size:13px;color:#6b7280;margin-top:4px}
+        .details-grid{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin:32px 0}
+        .detail-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1.5px;color:#9ca3af;margin-bottom:10px}
+        .detail-name{font-size:15px;font-weight:600}
+        .detail-sub{font-size:13px;color:#6b7280;margin-top:3px}
+        .status-badge{display:inline-flex;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600}
+        .status-paid{background:#dcfce7;color:#166534}
+        .status-pending{background:#fef9c3;color:#854d0e}
+        .status-failed{background:#fee2e2;color:#991b1b}
+        .status-expired{background:#f3f4f6;color:#6b7280}
+        .table-wrap{background:#f9fafb;border-radius:12px;padding:4px;margin:32px 0}
+        table{width:100%;border-collapse:collapse}
+        thead th{text-align:left;padding:14px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:#6b7280;border-bottom:1px solid #e5e7eb}
+        thead th:last-child{text-align:right}
+        tbody td{padding:16px;font-size:14px;color:#374151;border-bottom:1px solid #f3f4f6}
+        tbody td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+        .summary-section{display:flex;justify-content:flex-end}
+        .summary-table{width:280px}
+        .summary-row{display:flex;justify-content:space-between;padding:8px 16px;font-size:13px;color:#6b7280}
+        .summary-row.discount{color:#dc2626}
+        .summary-row.total{background:#111827;color:#fff;border-radius:8px;padding:14px 16px;font-size:16px;font-weight:700;margin-top:4px}
+        .divider{height:1px;background:#e5e7eb;margin:40px 0 24px}
+        .footer{text-align:center;padding:24px 0}
+        .footer-thanks{font-size:15px;font-weight:600;margin-bottom:4px}
+        .footer-brand{font-size:12px;color:#9ca3af;margin-top:8px}
+        .footer-brand a{color:${branding.primary_color};text-decoration:none}
+        body{transform:scale(0.85);transform-origin:top left;width:117.6%}
+        @media print{body{padding:24px 20px}}
+      </style></head><body>
+      <div class="header">
+        <div class="brand">
+          ${branding.site_logo_url
+            ? `<div class="brand-icon"><img src="${branding.site_logo_url}" alt="${branding.site_name}" /></div>`
+            : `<div class="brand-icon" style="background:linear-gradient(135deg,${branding.primary_color},#1d4ed8);color:#fff;font-size:18px;font-weight:700;display:flex;align-items:center;justify-content:center">${branding.site_name.charAt(0)}</div>`
+          }
+          <div>
+            <div class="brand-name">${branding.site_name}</div>
+            <div class="brand-sub">${branding.site_tagline || ''}</div>
+            ${branding.support_phone ? `<div class="brand-sub">${branding.support_phone}</div>` : ''}
+            ${branding.site_address ? `<div class="brand-sub">${branding.site_address}</div>` : ''}
+          </div>
+        </div>
+        <div class="meta"><div class="invoice-badge">Invoice</div><div class="invoice-number">#${order.id.slice(0, 8).toUpperCase()}</div>
+        <div class="invoice-date">${order.created_at ? new Date(order.created_at).toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'long', day: 'numeric' }) : '—'}</div></div>
+      </div>
+      <div class="details-grid">
+        <div><div class="detail-label">Bill To</div><div class="detail-name">${order.user?.full_name || "Walk-in Customer"}</div><div class="detail-sub">${order.user?.email || "—"}</div></div>
+        <div><div class="detail-label">Payment Info</div><div style="margin-bottom:6px"><span class="status-badge status-${order.status}">● ${order.status.charAt(0).toUpperCase() + order.status.slice(1)}</span></div>
+        ${order.bakong_transaction_id ? `<div class="detail-sub">Txn: ${order.bakong_transaction_id}</div>` : ""}
+        ${order.paid_at ? `<div class="detail-sub">Paid: ${new Date(order.paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</div>` : ""}</div>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Description</th><th>Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th></tr></thead>
+        <tbody><tr><td style="font-weight:500">${order.product_name}${order.serial_number ? `<div style="font-size:12px;color:#6b7280;margin-top:2px">S/N: ${order.serial_number}</div>` : ''}</td><td>1</td><td style="text-align:right">$${originalPrice.toFixed(2)}</td><td style="text-align:right;font-weight:600">$${originalPrice.toFixed(2)}</td></tr></tbody>
+      </table></div>
+      <div class="summary-section"><div class="summary-table">
+        <div class="summary-row"><span>Subtotal</span><span>$${originalPrice.toFixed(2)}</span></div>
+        ${itemDiscount > 0 ? `<div class="summary-row discount"><span>Item Discount (${itemDiscountLabel})</span><span>-$${(originalPrice - amount + saleDiscountVal + (order.delivery_fee ? parseFloat(order.delivery_fee) : 0)).toFixed(2)}</span></div>` : ''}
+        ${saleDiscountVal > 0 ? `<div class="summary-row discount"><span>Sale Discount (${saleDiscountLabel})</span><span>-$${saleDiscountVal.toFixed(2)}</span></div>` : ''}
+        ${order.delivery_fee && parseFloat(order.delivery_fee) > 0 ? `<div class="summary-row"><span>Delivery Fee</span><span>+$${parseFloat(order.delivery_fee).toFixed(2)}</span></div>` : ''}
+        <div class="summary-row total"><span>Grand Total</span><span>$${amount.toFixed(2)} ${order.currency}</span></div>
+      </div></div>
+      ${getWarrantyHtml(order.warranty_period, order.created_at, warrantiesList.find(w => w.name === order.warranty_period)?.policy)}
+      ${order.notes ? `<div style="margin-top:${order.warranty_period ? '12' : '24'}px;padding:16px 20px;background:#f9fafb;border-radius:10px;border-left:3px solid ${branding.primary_color}"><div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1.5px;color:#9ca3af;margin-bottom:6px">Note</div><div style="font-size:13px;color:#374151;line-height:1.6">${order.notes}</div></div>` : ''}
+      <div class="divider"></div>
+      <div class="footer"><div class="footer-thanks">${branding.invoice_footer_text}</div><div class="footer-brand">${branding.site_name}${branding.support_email ? ` — ${branding.support_email}` : ''}</div></div>
+      </body></html>`;
+
+    // Use window.open for Safari/iOS compatibility (iframe.print() is blocked without user gesture)
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.open();
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+      // Wait for fonts/images to load, then trigger print
+      printWindow.onload = () => {
+        printWindow.focus();
+        printWindow.print();
+      };
+      // Fallback if onload already fired
+      setTimeout(() => {
+        printWindow.focus();
+        printWindow.print();
+      }, 500);
+    } else {
+      // Popup blocked — fall back to iframe method
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;width:0;height:0;border:none;left:-9999px";
+      document.body.appendChild(iframe);
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!doc) { document.body.removeChild(iframe); return; }
+      doc.open();
+      doc.write(htmlContent);
+      doc.close();
+      iframe.onload = () => {
+        iframe.contentWindow?.print();
+        setTimeout(() => document.body.removeChild(iframe), 1000);
+      };
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-2 mt-4">
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5 text-destructive hover:text-destructive"
+        onClick={() => setShowDeleteConfirm(true)}
+      >
+        <Trash2 className="w-3.5 h-3.5" /> Delete
+      </Button>
+
+      <DeleteInvoiceConfirmDialog
+        order={order}
+        open={showDeleteConfirm}
+        onOpenChange={setShowDeleteConfirm}
+        onConfirm={() => deleteMutation.mutate()}
+        isPending={deleteMutation.isPending}
+      />
+
+      <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5 text-primary border-primary/30 hover:bg-primary/10"
+          onClick={() => setShowReceivedNoteDialog(true)}
+        >
+          <FileCheck2 className="w-3.5 h-3.5" /> Received Note
+        </Button>
+        <Button variant="outline" size="sm" className="gap-1.5" onClick={handlePrint}>
+          <Printer className="w-3.5 h-3.5" /> Print
+        </Button>
+      </div>
+
+      <CustomerReceivedNoteDialog
+        order={order}
+        open={showReceivedNoteDialog}
+        onOpenChange={setShowReceivedNoteDialog}
+      />
+    </div>
+  );
+};
+
+// ─── Warranty Select for Edit ─────────────────────────────────────────────────
+const WarrantySelectEdit = ({ value, onChange }: { value: string; onChange: (v: string) => void }) => {
+  const { data } = useQuery({
+    queryKey: ["warranties"],
+    queryFn: () => warrantyApi.getAll(),
+  });
+
+  const warranties = data?.warranties || [];
+
+  return (
+    <Select value={value || "__none__"} onValueChange={(v) => onChange(v === "__none__" ? "" : v)}>
+      <SelectTrigger className="mt-1.5"><SelectValue placeholder="No warranty" /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__none__">No warranty</SelectItem>
+        {warranties.map((w) => (
+          <SelectItem key={w.id} value={w.name}>{w.name} ({w.duration_days} days)</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+};
