@@ -373,27 +373,36 @@ class OrderController extends Controller
     public function searchCustomers(Request $request)
     {
         $q = trim((string) $request->get('q', ''));
-        $users = User::where('role', 'customer')
-            ->when($q, function ($query) use ($q) {
-                $query->where(function ($sub) use ($q) {
-                    $sub->where('name', 'like', "%{$q}%")
-                        ->orWhere('full_name', 'like', "%{$q}%")
-                        ->orWhere('phone', 'like', "%{$q}%")
-                        ->orWhere('email', 'like', "%{$q}%");
-                });
-            })
-            ->limit(20)
-            ->get();
+        $cols = \Illuminate\Support\Facades\Schema::getColumnListing('users');
+        $searchable = array_values(array_intersect(['username', 'name', 'full_name', 'phone', 'email'], $cols));
+
+        $query = User::query();
+        if (in_array('role', $cols, true)) {
+            $query->where('role', 'customer');
+        }
+        if ($q && !empty($searchable)) {
+            $query->where(function ($sub) use ($q, $searchable) {
+                foreach ($searchable as $idx => $col) {
+                    if ($idx === 0) {
+                        $sub->where($col, 'like', "%{$q}%");
+                    } else {
+                        $sub->orWhere($col, 'like', "%{$q}%");
+                    }
+                }
+            });
+        }
+
+        $users = $query->limit(20)->get();
 
         return response()->json([
             'success'   => true,
             'customers' => $users->map(function ($u) {
                 return [
                     'id'        => $u->id,
-                    'full_name' => $u->full_name ?? $u->name,
-                    'phone'     => $u->phone,
-                    'email'     => $u->email,
-                    'address'   => $u->address,
+                    'full_name' => $u->full_name ?? $u->name ?? $u->username,
+                    'phone'     => $u->phone ?? null,
+                    'email'     => $u->email ?? null,
+                    'address'   => $u->address ?? null,
                 ];
             }),
         ]);

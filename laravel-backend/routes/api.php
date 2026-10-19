@@ -36,6 +36,10 @@ Route::prefix('auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/admin-login', [AuthController::class, 'adminLogin']);
     Route::post('/change-password', [AuthController::class, 'changePassword']);
+    Route::get('/verify', [AuthController::class, 'verify']);
+    Route::get('/sessions', [AuthController::class, 'sessions']);
+    Route::post('/sessions/revoke', [AuthController::class, 'revokeSession']);
+    Route::post('/sessions/revoke-all', [AuthController::class, 'revokeAllSessions']);
 
     Route::middleware('jwt.auth')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);

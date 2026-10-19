@@ -14,19 +14,28 @@ class CustomerController extends Controller
 {
     public function index(Request $request)
     {
+        $cols = \Illuminate\Support\Facades\Schema::getColumnListing('users');
         $query = User::withCount('orders')
-            ->withSum('orders', 'amount')
-            ->where('role', 'customer');
+            ->withSum('orders', 'amount');
+
+        if (in_array('role', $cols, true)) {
+            $query->where('role', 'customer');
+        }
 
         if ($request->filled('search')) {
             $s = $request->search;
-            $query->where(function ($q) use ($s) {
-                $q->where('name', 'like', "%{$s}%")
-                  ->orWhere('full_name', 'like', "%{$s}%")
-                  ->orWhere('email', 'like', "%{$s}%")
-                  ->orWhere('phone', 'like', "%{$s}%")
-                  ->orWhere('telegram', 'like', "%{$s}%");
-            });
+            $searchable = array_values(array_intersect(['username', 'name', 'full_name', 'email', 'phone', 'telegram'], $cols));
+            if (!empty($searchable)) {
+                $query->where(function ($q) use ($s, $searchable) {
+                    foreach ($searchable as $idx => $col) {
+                        if ($idx === 0) {
+                            $q->where($col, 'like', "%{$s}%");
+                        } else {
+                            $q->orWhere($col, 'like', "%{$s}%");
+                        }
+                    }
+                });
+            }
         }
 
         $perPage = min(100, max(1, (int) $request->get('limit', $request->get('per_page', 20))));

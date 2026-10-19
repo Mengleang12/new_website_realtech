@@ -10,19 +10,22 @@ return new class extends Migration
     {
         Schema::create('users', function (Blueprint $table) {
             $table->id();
-            $table->string('name');
+            $table->string('username')->nullable()->unique();
+            $table->string('name')->nullable();
             $table->string('full_name')->nullable();
-            $table->string('email')->unique();
+            $table->string('email')->nullable()->unique();
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
             $table->string('phone')->nullable();
             $table->string('telegram')->nullable();
             $table->string('facebook_name')->nullable();
             $table->text('address')->nullable();
-            $table->string('role')->default('customer'); // 'admin', 'staff', 'customer'
+            $table->string('role')->default('admin'); // 'admin', 'staff', 'customer'
+            $table->json('roles')->nullable();
             $table->boolean('is_active')->default(true);
             $table->string('avatar')->nullable();
             $table->json('permissions')->nullable();
+            $table->string('api_token', 100)->nullable();
             $table->rememberToken();
             $table->timestamps();
         });

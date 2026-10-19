@@ -362,6 +362,28 @@ export function buildPackageLabelHtml(data: PackageLabelPrintData): string {
   const is100x150 = paper === "thermal_100x150";
   const is76x130 = paper === "thermal_76x130";
 
+  const fullAddressStr = `${data.city || ""} ${data.branch || ""}`.trim();
+  const addrLines = fullAddressStr.split(/\r?\n/).length;
+  const effectiveAddrLen = Math.max(fullAddressStr.length, addrLines * 28);
+  const isLongAddr = effectiveAddrLen > 45;
+  const isVeryLongAddr = effectiveAddrLen > 85;
+  const phoneLen = (data.receiverPhone || "").trim().length;
+
+  const destFontSize = (() => {
+    if (effectiveAddrLen <= 25) return isA4 ? "36px" : is100x150 ? "22px" : is76x130 ? "18px" : "28px";
+    if (effectiveAddrLen <= 45) return isA4 ? "28px" : is100x150 ? "18px" : is76x130 ? "15px" : "22px";
+    if (effectiveAddrLen <= 75) return isA4 ? "23px" : is100x150 ? "15px" : is76x130 ? "13px" : "18px";
+    if (effectiveAddrLen <= 115) return isA4 ? "19px" : is100x150 ? "13px" : is76x130 ? "11.5px" : "15px";
+    if (effectiveAddrLen <= 165) return isA4 ? "16px" : is100x150 ? "11.5px" : is76x130 ? "10px" : "13px";
+    return isA4 ? "14px" : is100x150 ? "10px" : is76x130 ? "9px" : "11.5px";
+  })();
+
+  const phoneFontSize = (() => {
+    if (phoneLen > 20) return isA4 ? "38px" : is100x150 ? "22px" : "28px";
+    if (phoneLen > 13) return isA4 ? "48px" : is100x150 ? "28px" : "36px";
+    return isA4 ? "64px" : is100x150 ? "38px" : "48px";
+  })();
+
   const pageSizeStyle = isA4
     ? "A4 portrait"
     : is100x150
@@ -534,18 +556,18 @@ export function buildPackageLabelHtml(data: PackageLabelPrintData): string {
     }
 
     .warning-triangle-svg {
-      width: ${isA4 ? "145px" : is100x150 ? "90px" : "120px"};
-      height: ${isA4 ? "125px" : is100x150 ? "78px" : "104px"};
+      width: ${isVeryLongAddr ? (isA4 ? "105px" : "82px") : isLongAddr ? (isA4 ? "125px" : "98px") : (isA4 ? "145px" : is100x150 ? "90px" : "120px")};
+      height: ${isVeryLongAddr ? (isA4 ? "90px" : "70px") : isLongAddr ? (isA4 ? "108px" : "84px") : (isA4 ? "125px" : is100x150 ? "78px" : "104px")};
     }
 
     .fragile-glass-svg {
-      width: ${isA4 ? "80px" : is100x150 ? "52px" : "66px"};
-      height: ${isA4 ? "80px" : is100x150 ? "52px" : "66px"};
+      width: ${isVeryLongAddr ? (isA4 ? "58px" : "46px") : isLongAddr ? (isA4 ? "68px" : "54px") : (isA4 ? "80px" : is100x150 ? "52px" : "66px")};
+      height: ${isVeryLongAddr ? (isA4 ? "58px" : "46px") : isLongAddr ? (isA4 ? "68px" : "54px") : (isA4 ? "80px" : is100x150 ? "52px" : "66px")};
       color: #000000;
     }
 
     .warning-text-headline {
-      font-size: ${isA4 ? "34px" : is100x150 ? "21px" : "28px"};
+      font-size: ${isVeryLongAddr ? (isA4 ? "26px" : "21px") : (isA4 ? "34px" : is100x150 ? "21px" : "28px")};
       font-weight: 900;
       line-height: 1.25;
       color: #000000;
@@ -581,7 +603,7 @@ export function buildPackageLabelHtml(data: PackageLabelPrintData): string {
       width: 100%;
       border: 3px solid #000000;
       border-radius: 10px;
-      padding: ${isA4 ? "5mm 6mm" : "3.5mm 4.5mm"};
+      padding: ${isA4 ? "4.5mm 5mm" : "3mm 4mm"};
       margin: 1.5mm 0;
       display: flex;
       flex-direction: column;
@@ -589,8 +611,10 @@ export function buildPackageLabelHtml(data: PackageLabelPrintData): string {
       justify-content: center;
       text-align: center;
       flex: 1;
+      min-height: 0;
       background: #ffffff;
       box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+      overflow: hidden;
     }
 
     .receiver-badge-label {
@@ -603,24 +627,29 @@ export function buildPackageLabelHtml(data: PackageLabelPrintData): string {
     }
 
     .receiver-phone-huge {
-      font-size: ${isA4 ? "66px" : is100x150 ? "38px" : "50px"};
+      font-size: ${phoneFontSize};
       font-weight: 900;
       line-height: 1.1;
-      letter-spacing: 2.5px;
+      letter-spacing: ${phoneLen > 13 ? "1.5px" : "2.5px"};
       color: #000000;
       font-family: 'Plus Jakarta Sans', monospace, sans-serif;
       margin: 1mm 0;
-      white-space: nowrap;
+      max-width: 100%;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .receiver-destination {
-      font-size: ${isA4 ? "38px" : is100x150 ? "23px" : "30px"};
+      font-size: ${destFontSize};
       font-weight: 900;
-      line-height: 1.25;
+      line-height: 1.24;
       color: #000000;
       margin-top: 1.5mm;
+      max-width: 100%;
       word-break: break-word;
-      padding: 0 2mm;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+      padding: 0 1.5mm;
     }
     .city-part {
       font-weight: 900;
@@ -792,7 +821,7 @@ export function buildPackageLabelHtml(data: PackageLabelPrintData): string {
               if (lowerBranch.includes(lowerCity)) {
                 return `<span class="branch-part">${data.branch}</span>`;
               }
-              if (data.singleLineLocation !== false) {
+              if (data.singleLineLocation === true && effectiveAddrLen <= 32) {
                 return `<span class="city-part">${data.city}</span><span class="loc-sep">—</span><span class="branch-part">${data.branch}</span>`;
               }
               return `<div><span class="city-part">${data.city}</span></div><div style="margin-top: 2px;"><span class="branch-part">${data.branch}</span></div>`;
@@ -829,9 +858,40 @@ export function buildPackageLabelHtml(data: PackageLabelPrintData): string {
   </div>
 
   <script>
+    function autoFitLabelContent() {
+      try {
+        var box = document.querySelector('.outer-border-box');
+        var card = document.querySelector('.receiver-main-card');
+        var dest = document.querySelector('.receiver-destination');
+        var phone = document.querySelector('.receiver-phone-huge');
+        if (!box || !card || !dest) return;
+
+        var destSize = parseFloat(window.getComputedStyle(dest).fontSize) || 20;
+        var guard = 0;
+        while ((card.scrollHeight > card.clientHeight + 2 || box.scrollHeight > box.clientHeight + 2) && destSize > 10 && guard < 30) {
+          destSize -= 1;
+          dest.style.fontSize = destSize + 'px';
+          dest.style.lineHeight = '1.18';
+          guard++;
+        }
+
+        if (phone && phone.scrollWidth > card.clientWidth - 16) {
+          var phoneSize = parseFloat(window.getComputedStyle(phone).fontSize) || 40;
+          var pGuard = 0;
+          while (phone.scrollWidth > card.clientWidth - 16 && phoneSize > 18 && pGuard < 25) {
+            phoneSize -= 2;
+            phone.style.fontSize = phoneSize + 'px';
+            pGuard++;
+          }
+        }
+      } catch (e) {}
+    }
+
     function triggerPrint() {
+      autoFitLabelContent();
       if (document.fonts && document.fonts.ready) {
         document.fonts.ready.then(function() {
+          autoFitLabelContent();
           setTimeout(function() {
             window.focus();
             try { window.print(); } catch(e) {}
@@ -839,6 +899,7 @@ export function buildPackageLabelHtml(data: PackageLabelPrintData): string {
         });
       } else {
         setTimeout(function() {
+          autoFitLabelContent();
           window.focus();
           try { window.print(); } catch(e) {}
         }, 400);
@@ -977,7 +1038,7 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
   const [showOrderId, setShowOrderId] = useState(false);
   const [showCod, setShowCod] = useState(false);
   const [showItems, setShowItems] = useState(false);
-  const [singleLineLocation, setSingleLineLocation] = useState(true);
+  const [singleLineLocation, setSingleLineLocation] = useState(false);
 
   const applyOrderData = useCallback((orderToUse: AdminOrder, fromApi = false) => {
     const phone = resolveCustomerPhone(orderToUse);
@@ -1635,20 +1696,21 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
                 />
               </label>
             </div>
-            <div className="relative flex items-center">
-              <Input
+            <div className="relative flex items-start">
+              <Textarea
+                rows={2}
                 value={branch}
                 onChange={(e) => {
                   hasUserEditedRef.current = true;
                   setBranch(e.target.value);
                 }}
                 placeholder="e.g. Khan Toul Kork, St 271 / ឃ្លាំងឯករាជ្យ / ផ្សារលើ..."
-                className="font-medium text-sm h-9 pr-18"
+                className="font-medium text-sm min-h-[54px] pr-18 py-2 resize-y leading-snug"
               />
               <button
                 type="button"
                 onClick={() => pasteToField(setBranch, "Branch / Street Address")}
-                className="absolute right-1 px-2 py-1 rounded-md text-[11px] font-medium bg-muted hover:bg-muted/80 text-foreground flex items-center gap-1 transition-all cursor-pointer border border-border/50 active:scale-95"
+                className="absolute right-1.5 top-1.5 px-2 py-1 rounded-md text-[11px] font-medium bg-muted hover:bg-muted/80 text-foreground flex items-center gap-1 transition-all cursor-pointer border border-border/50 active:scale-95"
                 title="Paste branch or street address from clipboard"
               >
                 <ClipboardPaste className="w-3.5 h-3.5 text-blue-500" />
@@ -1882,21 +1944,28 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
               </div>
 
               {/* 1. VERY BIG WARNING AT THE TOP */}
-              <div className="w-full flex flex-col items-center justify-center border-b-2 border-black pb-2 mb-1 shrink-0 bg-amber-50/70 border border-amber-300 rounded-lg p-2">
-                {/* Big Warning Symbols */}
-                <div className="flex items-center justify-center gap-3.5 my-0.5 shrink-0">
-                  <WarningTriangleSvg className="w-22 h-18 sm:w-26 sm:h-22 drop-shadow-sm" />
-                  <FragileGlassSvg className="w-11 h-11 sm:w-13 sm:h-13 text-black drop-shadow-xs" />
-                </div>
+              {(() => {
+                const fullPreviewAddr = `${city || ""} ${branch || ""}`.trim();
+                const previewAddrLen = Math.max(fullPreviewAddr.length, fullPreviewAddr.split(/\r?\n/).length * 28);
+                const isCompactWarn = previewAddrLen > 50;
+                return (
+                  <div className={`w-full flex flex-col items-center justify-center border-b-2 border-black ${isCompactWarn ? "pb-1.5 mb-0.5 p-1.5" : "pb-2 mb-1 p-2"} shrink-0 bg-amber-50/70 border border-amber-300 rounded-lg`}>
+                    {/* Big Warning Symbols */}
+                    <div className="flex items-center justify-center gap-3.5 my-0.5 shrink-0">
+                      <WarningTriangleSvg className={isCompactWarn ? "w-16 h-13 sm:w-18 sm:h-15 drop-shadow-sm" : "w-22 h-18 sm:w-26 sm:h-22 drop-shadow-sm"} />
+                      <FragileGlassSvg className={isCompactWarn ? "w-9 h-9 sm:w-10 sm:h-10 text-black drop-shadow-xs" : "w-11 h-11 sm:w-13 sm:h-13 text-black drop-shadow-xs"} />
+                    </div>
 
-                {/* Big Warning Headline */}
-                <div className="font-black text-[17px] sm:text-[20px] text-amber-950 leading-tight tracking-wide px-1">
-                  {warningText || "ប្រយ័ត្នបាក់បែក ឬ សើម"}
-                </div>
-                <div className="text-[8.5px] sm:text-[9.5px] font-black text-amber-900 uppercase tracking-widest mt-0.5">
-                  Fragile Tech Package • Handle With Utmost Care
-                </div>
-              </div>
+                    {/* Big Warning Headline */}
+                    <div className={`font-black ${isCompactWarn ? "text-[14px] sm:text-[16px]" : "text-[17px] sm:text-[20px]"} text-amber-950 leading-tight tracking-wide px-1`}>
+                      {warningText || "ប្រយ័ត្នបាក់បែក ឬ សើម"}
+                    </div>
+                    <div className="text-[8.5px] sm:text-[9.5px] font-black text-amber-900 uppercase tracking-widest mt-0.5">
+                      Fragile Tech Package • Handle With Utmost Care
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* 2. SENDER PHONE NUMBER (DIRECTLY ON TOP OF RECEIVER) */}
               {senderPhone && (
@@ -1907,37 +1976,61 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
               )}
 
               {/* 3. RECEIVER SECTION */}
-              <div className="border-3 border-black rounded-xl p-2.5 sm:p-3 my-1 bg-white shadow-xs text-center flex flex-col justify-center flex-1">
-                <div className="text-[9.5px] sm:text-[10.5px] font-black uppercase tracking-wider text-blue-700 flex items-center justify-center gap-1 mb-0.5">
+              <div className="border-3 border-black rounded-xl p-2 sm:p-2.5 my-1 bg-white shadow-xs text-center flex flex-col justify-center flex-1 min-h-0 overflow-hidden">
+                <div className="text-[9.5px] sm:text-[10.5px] font-black uppercase tracking-wider text-blue-700 flex items-center justify-center gap-1 mb-0.5 shrink-0">
                   <Phone className="w-3 h-3" />
                   លេខអ្នកទទួល / Recipient Phone
                 </div>
 
-                <div className="font-black text-[27px] sm:text-[33px] tracking-widest text-black font-sans my-0.5 whitespace-nowrap overflow-hidden text-ellipsis leading-none">
-                  {receiverPhone || "000 000 000"}
-                </div>
+                {(() => {
+                  const pLen = (receiverPhone || "").trim().length;
+                  const phoneSizeClass = pLen > 20
+                    ? "text-[17px] sm:text-[20px] tracking-normal"
+                    : pLen > 13
+                    ? "text-[21px] sm:text-[25px] tracking-wide"
+                    : "text-[26px] sm:text-[32px] tracking-widest";
+                  return (
+                    <div className={`font-black ${phoneSizeClass} text-black font-sans my-0.5 break-words leading-tight`}>
+                      {receiverPhone || "000 000 000"}
+                    </div>
+                  );
+                })()}
 
                 {/* Location */}
-                {(city || branch) && (
-                  <div className="font-black text-[15px] sm:text-[18px] text-black leading-snug px-1 mt-0.5 max-w-full">
-                    {city && branch && !branch.toLowerCase().includes(city.toLowerCase()) ? (
-                      singleLineLocation ? (
-                        <div className="flex items-center justify-center gap-1.5 truncate">
-                          <span className="font-extrabold text-blue-950">{city}</span>
-                          <span className="text-neutral-400 font-normal">—</span>
-                          <span className="font-black text-black">{branch}</span>
-                        </div>
+                {(city || branch) && (() => {
+                  const fullPreviewAddr = `${city || ""} ${branch || ""}`.trim();
+                  const previewAddrLen = Math.max(fullPreviewAddr.length, fullPreviewAddr.split(/\r?\n/).length * 28);
+                  const addrSizeClass = previewAddrLen <= 25
+                    ? "text-[15px] sm:text-[17px] leading-snug"
+                    : previewAddrLen <= 45
+                    ? "text-[13px] sm:text-[14.5px] leading-snug"
+                    : previewAddrLen <= 75
+                    ? "text-[11.5px] sm:text-[12.5px] leading-tight"
+                    : previewAddrLen <= 115
+                    ? "text-[10px] sm:text-[11px] leading-tight"
+                    : "text-[9px] sm:text-[10px] leading-tight";
+
+                  return (
+                    <div className={`font-black ${addrSizeClass} text-black px-1 mt-0.5 max-w-full break-words whitespace-pre-wrap`}>
+                      {city && branch && !branch.toLowerCase().includes(city.toLowerCase()) ? (
+                        singleLineLocation && previewAddrLen <= 30 ? (
+                          <div className="flex flex-wrap items-center justify-center gap-1">
+                            <span className="font-extrabold text-blue-950">{city}</span>
+                            <span className="text-neutral-400 font-normal">—</span>
+                            <span className="font-black text-black break-words">{branch}</span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="font-extrabold text-[0.9em] text-blue-950">{city}</div>
+                            <div className="font-black text-black break-words whitespace-pre-wrap mt-0.5">{branch}</div>
+                          </>
+                        )
                       ) : (
-                        <>
-                          <div className="font-extrabold text-[13px] text-blue-950">{city}</div>
-                          <div className="font-black text-[16px] text-black">{branch}</div>
-                        </>
-                      )
-                    ) : (
-                      <div className="truncate font-black text-black">{branch || city}</div>
-                    )}
-                  </div>
-                )}
+                        <div className="font-black text-black break-words whitespace-pre-wrap">{branch || city}</div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* 4. COD BADGE IF ACTIVE */}
@@ -2213,21 +2306,44 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
             </div>
             <div
               style={{
-                fontSize: "38px",
+                fontSize: (receiverPhone || "").trim().length > 20 ? "24px" : (receiverPhone || "").trim().length > 13 ? "30px" : "38px",
                 fontWeight: 900,
                 lineHeight: 1.1,
-                letterSpacing: "2.5px",
+                letterSpacing: "2px",
                 color: "#000000",
                 fontFamily: "'Plus Jakarta Sans', monospace, sans-serif",
                 margin: "4px 0",
-                whiteSpace: "nowrap",
+                maxWidth: "100%",
+                wordBreak: "break-word",
+                overflowWrap: "anywhere",
               }}
             >
               {receiverPhone || "— — —"}
             </div>
-            <div style={{ fontSize: "22px", fontWeight: 900, color: "#000000", marginTop: "6px" }}>
-              {city && branch ? `${city} — ${branch}` : (branch || city || "Phnom Penh")}
-            </div>
+            {(() => {
+              const fullPdfAddr = `${city || ""} ${branch || ""}`.trim();
+              const pdfAddrLen = Math.max(fullPdfAddr.length, fullPdfAddr.split(/\r?\n/).length * 28);
+              const pdfFontSize = pdfAddrLen <= 25 ? "22px" : pdfAddrLen <= 45 ? "18px" : pdfAddrLen <= 75 ? "15px" : pdfAddrLen <= 115 ? "13px" : "11.5px";
+              return (
+                <div
+                  style={{
+                    fontSize: pdfFontSize,
+                    fontWeight: 900,
+                    color: "#000000",
+                    marginTop: "6px",
+                    lineHeight: 1.22,
+                    maxWidth: "100%",
+                    wordBreak: "break-word",
+                    overflowWrap: "anywhere",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {city && branch && !branch.toLowerCase().includes(city.toLowerCase())
+                    ? (singleLineLocation && pdfAddrLen <= 30 ? `${city} — ${branch}` : `${city}\n${branch}`)
+                    : (branch || city || "Phnom Penh")}
+                </div>
+              );
+            })()}
           </div>
 
           {/* 4. COD */}
