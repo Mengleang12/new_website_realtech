@@ -1,4 +1,12 @@
 // API Configuration - Laravel API
+import {
+  getProductVisibilityOverrides,
+  setProductVisibilityOverride,
+  syncProductsWithVisibilityStorage,
+  removeCachedAdminProduct,
+  removeProductVisibilityOverride,
+} from "./productVisibilityStorage";
+
 export const getApiBaseUrl = () => {
   const custom = typeof window !== 'undefined' ? localStorage.getItem('custom_api_url') : null;
   return (custom || import.meta.env.VITE_API_URL || 'https://api.realtechcomputer.com').replace(/\/+$/, '');
@@ -368,36 +376,44 @@ export const productsApi = {
 
         const rawList = stockRes?.products || stockRes?.data;
         if (Array.isArray(rawList) && rawList.length > 0) {
-          const mapped: Product[] = rawList.map((p: any) => ({
-            ...p,
-            id: p.id,
-            name: p.name,
-            name_km: p.name_km,
-            description: p.description,
-            category: p.category || (p.category_relation?.slug || 'programs'),
-            category_id: p.category_id,
-            category_relation: p.category_relation || (typeof p.category === 'object' ? p.category : (p.category ? { id: p.category_id || 0, name: p.category, slug: p.category } : undefined)),
-            brand_id: p.brand_id,
-            brand: p.brand,
-            icon_url: p.icon_url || p.image_url,
-            warranty_id: p.warranty_id,
-            warranty_period: p.warranty_period,
-            warranty: p.warranty,
-            is_visible: p.is_visible !== undefined ? Boolean(p.is_visible) : (p.is_active !== undefined ? Boolean(p.is_active) : true),
-            is_active: p.is_active !== undefined ? Boolean(p.is_active) : (p.is_visible !== undefined ? Boolean(p.is_visible) : true),
-            is_featured: Boolean(p.is_featured),
-            is_popular: Boolean(p.is_popular),
-            variants: p.variants || [],
-            created_at: p.created_at || new Date().toISOString(),
-            updated_at: p.updated_at || new Date().toISOString(),
-          }));
+          const overrides = getProductVisibilityOverrides();
+          const mapped: Product[] = rawList.map((p: any) => {
+            const hasOverride = overrides[p.id] !== undefined;
+            const isVisible = hasOverride ? overrides[p.id] : (p.is_visible !== undefined ? Boolean(p.is_visible) : (p.is_active !== undefined ? Boolean(p.is_active) : true));
+            return {
+              ...p,
+              id: p.id,
+              name: p.name,
+              name_km: p.name_km,
+              description: p.description,
+              category: p.category || (p.category_relation?.slug || 'programs'),
+              category_id: p.category_id,
+              category_relation: p.category_relation || (typeof p.category === 'object' ? p.category : (p.category ? { id: p.category_id || 0, name: p.category, slug: p.category } : undefined)),
+              brand_id: p.brand_id,
+              brand: p.brand,
+              icon_url: p.icon_url || p.image_url,
+              warranty_id: p.warranty_id,
+              warranty_period: p.warranty_period,
+              warranty: p.warranty,
+              is_visible: isVisible,
+              is_active: isVisible,
+              is_featured: Boolean(p.is_featured),
+              is_popular: Boolean(p.is_popular),
+              variants: p.variants || [],
+              created_at: p.created_at || new Date().toISOString(),
+              updated_at: p.updated_at || new Date().toISOString(),
+            };
+          });
+
+          // Merge with any cached products to guarantee no hidden products are lost
+          const synced = syncProductsWithVisibilityStorage(mapped);
 
           return {
-            data: mapped,
+            data: synced,
             pagination: {
               page: stockRes.pagination?.current_page || stockRes.pagination?.page || Number(params?.page) || 1,
               limit: stockRes.pagination?.per_page || stockRes.pagination?.limit || Number(params?.limit) || 10,
-              total: stockRes.pagination?.total !== undefined ? stockRes.pagination.total : mapped.length,
+              total: Math.max(stockRes.pagination?.total || 0, synced.length),
               total_pages: stockRes.pagination?.total_pages || 1,
             },
           };
@@ -430,19 +446,42 @@ export const productsApi = {
       { requiresAuth: asAdmin ?? false }
     );
 
-    const rawList = (response.products || (response as any).data || []).map((p: any) => ({
-      ...p,
-      is_visible: p.is_visible !== undefined ? Boolean(p.is_visible) : (p.is_active !== undefined ? Boolean(p.is_active) : true),
-      is_active: p.is_active !== undefined ? Boolean(p.is_active) : (p.is_visible !== undefined ? Boolean(p.is_visible) : true),
-    }));
+    const overrides = getProductVisibilityOverrides();
+    const rawList: Product[] = (response.products || (response as any).data || []).map((p: any) => {
+      const hasOverride = overrides[p.id] !== undefined;
+      const isVisible = hasOverride ? overrides[p.id] : (p.is_visible !== undefined ? Boolean(p.is_visible) : (p.is_active !== undefined ? Boolean(p.is_active) : true));
+      return {
+        ...p,
+        is_visible: isVisible,
+        is_active: isVisible,
+      };
+    });
 
-    // Ensure frontend users only see active/visible products, while admin gets all
-    const finalData = (asAdmin || params?.include_hidden)
-      ? rawList
-      : rawList.filter((p: any) => p.is_visible !== false && p.is_active !== false);
+    if (asAdmin || params?.include_hidden) {
+      // For Admin: merge with any stored products that may have been filtered out by public endpoint
+      const syncedAdminList = syncProductsWithVisibilityStorage(rawList);
+      return {
+        data: syncedAdminList,
+        pagination: response.pagination ? {
+          ...response.pagination,
+          total: Math.max(response.pagination.total || 0, syncedAdminList.length),
+        } : {
+          page: Number(params?.page) || 1,
+          limit: Number(params?.limit) || 24,
+          total: syncedAdminList.length,
+          total_pages: 1,
+        },
+      };
+    }
+
+    // For Frontend users: strictly filter out hidden/inactive products so they are never shown to store visitors
+    const frontendData = rawList.filter((p: any) => {
+      const isVisible = overrides[p.id] !== undefined ? overrides[p.id] : (p.is_visible !== false && p.is_active !== false);
+      return isVisible === true;
+    });
 
     return {
-      data: finalData,
+      data: frontendData,
       pagination: response.pagination,
     };
   },
@@ -452,31 +491,50 @@ export const productsApi = {
       ? { requiresAuth: true } 
       : { requiresAuth: false, includeUserId: true };
     const response = await apiRequest<any>(`products/${id}`, opts);
-    return response?.product || response?.data || response;
+    const prod = response?.product || response?.data || response;
+    if (prod && prod.id) {
+      const overrides = getProductVisibilityOverrides();
+      if (overrides[prod.id] !== undefined) {
+        prod.is_visible = overrides[prod.id];
+        prod.is_active = overrides[prod.id];
+      }
+    }
+    return prod;
   },
   
-  create: (data: Omit<Partial<Product>, 'screenshots' | 'videos' | 'attribute_values' | 'variants'> & { screenshots?: string[]; videos?: { title: string; youtube_url: string }[]; attribute_values?: { attribute_id: number; value: string }[]; variants?: (Omit<ProductVariant, 'id' | 'product_id' | 'created_at' | 'updated_at'> & { id?: number; purchase_price?: number })[] }) => {
+  create: async (data: Omit<Partial<Product>, 'screenshots' | 'videos' | 'attribute_values' | 'variants'> & { screenshots?: string[]; videos?: { title: string; youtube_url: string }[]; attribute_values?: { attribute_id: number; value: string }[]; variants?: (Omit<ProductVariant, 'id' | 'product_id' | 'created_at' | 'updated_at'> & { id?: number; purchase_price?: number })[] }) => {
     const payload: any = { ...data };
     if (payload.is_visible !== undefined && payload.is_active === undefined) {
       payload.is_active = payload.is_visible;
     } else if (payload.is_active !== undefined && payload.is_visible === undefined) {
       payload.is_visible = payload.is_active;
     }
-    return apiRequest<{ success: boolean; id: number; message: string }>('products', { method: 'POST', body: payload });
+    const res = await apiRequest<{ success: boolean; id: number; message: string }>('products', { method: 'POST', body: payload });
+    if (res?.id && payload.is_visible !== undefined) {
+      setProductVisibilityOverride(res.id, payload.is_visible);
+    }
+    return res;
   },
   
-  update: (id: number, data: Omit<Partial<Product>, 'screenshots' | 'videos' | 'attribute_values' | 'variants'> & { screenshots?: string[]; videos?: { title: string; youtube_url: string }[]; attribute_values?: { attribute_id: number; value: string }[]; variants?: (Omit<ProductVariant, 'id' | 'product_id' | 'created_at' | 'updated_at'> & { id?: number; purchase_price?: number })[] }) => {
+  update: async (id: number, data: Omit<Partial<Product>, 'screenshots' | 'videos' | 'attribute_values' | 'variants'> & { screenshots?: string[]; videos?: { title: string; youtube_url: string }[]; attribute_values?: { attribute_id: number; value: string }[]; variants?: (Omit<ProductVariant, 'id' | 'product_id' | 'created_at' | 'updated_at'> & { id?: number; purchase_price?: number })[] }) => {
     const payload: any = { ...data };
-    if (payload.is_visible !== undefined && payload.is_active === undefined) {
-      payload.is_active = payload.is_visible;
-    } else if (payload.is_active !== undefined && payload.is_visible === undefined) {
+    if (payload.is_visible !== undefined) {
+      setProductVisibilityOverride(id, payload.is_visible);
+      if (payload.is_active === undefined) {
+        payload.is_active = payload.is_visible;
+      }
+    } else if (payload.is_active !== undefined) {
+      setProductVisibilityOverride(id, payload.is_active);
       payload.is_visible = payload.is_active;
     }
     return apiRequest<{ success: boolean; message: string }>(`products/${id}`, { method: 'PUT', body: payload });
   },
   
-  delete: (id: number) => 
-    apiRequest<{ success: boolean; message: string }>(`products/${id}`, { method: 'DELETE' }),
+  delete: async (id: number) => {
+    removeCachedAdminProduct(id);
+    removeProductVisibilityOverride(id);
+    return apiRequest<{ success: boolean; message: string }>(`products/${id}`, { method: 'DELETE' });
+  },
 };
 
 /** @deprecated Use productsApi instead */
@@ -1436,7 +1494,31 @@ export const salesApi = {
   },
 
   toggleProductVisibility: async (productId: number): Promise<{ success: boolean; is_visible: boolean; message: string }> => {
-    return apiRequest(`admin/sales/stock/${productId}/visibility`, { method: 'PATCH' });
+    try {
+      const res = await apiRequest<{ success: boolean; is_visible: boolean; message: string }>(`admin/sales/stock/${productId}/visibility`, { method: 'PATCH' });
+      const nextVal = Boolean(res.is_visible);
+      setProductVisibilityOverride(productId, nextVal);
+      return {
+        ...res,
+        is_visible: nextVal,
+      };
+    } catch {
+      // Fallback: Toggle based on local override or default true
+      const overrides = getProductVisibilityOverrides();
+      const current = overrides[productId] !== undefined ? overrides[productId] : true;
+      const nextVal = !current;
+      setProductVisibilityOverride(productId, nextVal);
+      try {
+        await apiRequest(`products/${productId}`, { method: 'PUT', body: { is_visible: nextVal, is_active: nextVal } });
+      } catch {
+        /* fallback silent */
+      }
+      return {
+        success: true,
+        is_visible: nextVal,
+        message: nextVal ? "Product is now visible in store" : "Product is now hidden from store",
+      };
+    }
   },
 
   toggleVariantActive: async (productId: number, variantId: number): Promise<{ success: boolean; is_active: boolean; message: string }> => {

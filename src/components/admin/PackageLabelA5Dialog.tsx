@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { AdminDialog } from "./AdminDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -10,7 +11,7 @@ import { toast } from "sonner";
 import {
   Printer, Package, AlertTriangle, Phone, MapPin, Building2,
   Truck, DollarSign, User, Hash, RefreshCw, Check, Info, Loader2, ExternalLink,
-  Download, Eye, Edit3, Smartphone, Sparkles, ShieldCheck
+  Download, Eye, Edit3, Smartphone, Sparkles, ShieldCheck, ClipboardPaste
 } from "lucide-react";
 import { adminUsersApi, type AdminOrder } from "@/lib/api";
 import { getInvoiceBranding } from "@/lib/invoice-branding";
@@ -957,6 +958,13 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [paperSize, setPaperSize] = useState<"a5" | "a4" | "thermal_100x150" | "thermal_76x130">("a5");
   const [smartPasteText, setSmartPasteText] = useState("");
+  // Fallback modal for pasting if clipboard readText is restricted by browser/iframe
+  const [quickPasteModal, setQuickPasteModal] = useState<{
+    fieldName: string;
+    setter: (val: string) => void;
+    transform?: (val: string) => string;
+  } | null>(null);
+  const [quickPasteInputText, setQuickPasteInputText] = useState("");
 
   const [mobileTab, setMobileTab] = useState<"edit" | "preview">("edit");
   const hasUserEditedRef = useRef(false);
@@ -1114,17 +1122,59 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
     setSmartPasteText("");
   };
 
-  const handlePasteFromClipboard = async () => {
+  const extractPhone = (val: string): string => {
+    const match = val.match(/(?:(?:\+?855|0)[1-9][0-9\s\-]{6,12})/);
+    if (match) return match[0].replace(/[\s\-]/g, '');
+    const clean = val.replace(/[^0-9+]/g, '');
+    return clean || val.trim();
+  };
+
+  const extractCod = (val: string): string => {
+    const match = val.match(/\$?\s*([0-9]+(?:\.[0-9]{1,2})?)/);
+    if (match) return `$${parseFloat(match[1]).toFixed(2)}`;
+    return val.trim();
+  };
+
+  const pasteToField = async (setter: (val: string) => void, fieldName: string, transform?: (val: string) => string) => {
     try {
-      const text = await navigator.clipboard.readText();
-      if (text) {
-        handleSmartPaste(text);
-      } else {
-        toast.error("Clipboard is empty");
+      if (typeof navigator !== "undefined" && navigator.clipboard?.readText) {
+        const text = await navigator.clipboard.readText();
+        if (text && text.trim()) {
+          hasUserEditedRef.current = true;
+          const finalVal = transform ? transform(text.trim()) : text.trim();
+          setter(finalVal);
+          toast.success(`Pasted into ${fieldName}`);
+          return;
+        }
       }
     } catch {
-      toast.error("Please paste directly into the box");
+      // Clipboard read blocked by browser permissions, open fallback modal
     }
+    setQuickPasteInputText("");
+    setQuickPasteModal({ fieldName, setter, transform });
+  };
+
+  const handlePasteFromClipboard = async () => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.readText) {
+        const text = await navigator.clipboard.readText();
+        if (text && text.trim()) {
+          setSmartPasteText(text.trim());
+          handleSmartPaste(text.trim());
+          return;
+        }
+      }
+    } catch {
+      // Clipboard read blocked by browser permissions, open fallback modal
+    }
+    setQuickPasteInputText("");
+    setQuickPasteModal({
+      fieldName: "Quick Customer Auto-Fill",
+      setter: (t) => {
+        setSmartPasteText(t);
+        handleSmartPaste(t);
+      },
+    });
   };
 
   const handleClearForm = () => {
@@ -1220,6 +1270,7 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
   };
 
   return (
+    <>
     <AdminDialog
       open={open}
       onOpenChange={onOpenChange}
@@ -1355,18 +1406,29 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
               </div>
             </div>
             <div className="flex gap-2">
-              <Input
-                value={smartPasteText}
-                onChange={(e) => setSmartPasteText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleSmartPaste(smartPasteText);
-                  }
-                }}
-                placeholder="Paste customer phone, address, or branch note..."
-                className="text-xs h-9 bg-background"
-              />
+              <div className="relative flex-1 flex items-center">
+                <Input
+                  value={smartPasteText}
+                  onChange={(e) => setSmartPasteText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleSmartPaste(smartPasteText);
+                    }
+                  }}
+                  placeholder="Paste customer phone, address, or branch note..."
+                  className="text-xs h-9 bg-background pr-18"
+                />
+                <button
+                  type="button"
+                  onClick={handlePasteFromClipboard}
+                  className="absolute right-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-primary/10 hover:bg-primary/20 text-primary flex items-center gap-1 transition-all cursor-pointer border border-primary/20 active:scale-95"
+                  title="Paste from clipboard and auto-fill"
+                >
+                  <ClipboardPaste className="w-3 h-3" />
+                  <span>Paste</span>
+                </button>
+              </div>
               <Button
                 type="button"
                 size="sm"
@@ -1385,15 +1447,26 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
               <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
               Top Warning Text (អក្សរប្រយ័ត្នធំផ្នែកខាងលើ)
             </Label>
-            <Input
-              value={warningText}
-              onChange={(e) => {
-                hasUserEditedRef.current = true;
-                setWarningText(e.target.value);
-              }}
-              placeholder="ប្រយ័ត្នបាក់បែក ឬ សើម"
-              className="font-medium text-sm h-9"
-            />
+            <div className="relative flex items-center">
+              <Input
+                value={warningText}
+                onChange={(e) => {
+                  hasUserEditedRef.current = true;
+                  setWarningText(e.target.value);
+                }}
+                placeholder="ប្រយ័ត្នបាក់បែក ឬ សើម"
+                className="font-medium text-sm h-9 pr-18"
+              />
+              <button
+                type="button"
+                onClick={() => pasteToField(setWarningText, "Top Warning Text")}
+                className="absolute right-1 px-2 py-1 rounded-md text-[11px] font-medium bg-muted hover:bg-muted/80 text-foreground flex items-center gap-1 transition-all cursor-pointer border border-border/50 active:scale-95"
+                title="Paste warning text from clipboard"
+              >
+                <ClipboardPaste className="w-3 h-3 text-amber-500" />
+                <span>Paste</span>
+              </button>
+            </div>
             <div className="flex flex-wrap gap-1.5 pt-0.5">
               {WARNING_PRESETS.map((preset) => (
                 <button
@@ -1433,15 +1506,26 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
                 Set: 087 75 3939
               </button>
             </div>
-            <Input
-              value={senderPhone}
-              onChange={(e) => {
-                hasUserEditedRef.current = true;
-                setSenderPhone(e.target.value);
-              }}
-              placeholder="e.g. 087 75 3939"
-              className="font-mono text-base font-bold text-foreground h-10 bg-background"
-            />
+            <div className="relative flex items-center">
+              <Input
+                value={senderPhone}
+                onChange={(e) => {
+                  hasUserEditedRef.current = true;
+                  setSenderPhone(e.target.value);
+                }}
+                placeholder="e.g. 087 75 3939"
+                className="font-mono text-base font-bold text-foreground h-10 bg-background pr-20"
+              />
+              <button
+                type="button"
+                onClick={() => pasteToField(setSenderPhone, "Sender Phone", extractPhone)}
+                className="absolute right-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-900 dark:text-amber-200 border border-amber-500/30 flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                title="Paste sender phone from clipboard"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                <span>Paste</span>
+              </button>
+            </div>
           </div>
 
           {/* Recipient Phone (Primary Focus) */}
@@ -1457,16 +1541,27 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
                 </span>
               )}
             </div>
-            <Input
-              ref={receiverPhoneInputRef}
-              value={receiverPhone}
-              onChange={(e) => {
-                hasUserEditedRef.current = true;
-                setReceiverPhone(e.target.value);
-              }}
-              placeholder="e.g. 069696397"
-              className="font-mono text-base font-bold text-foreground tracking-wider h-10 bg-background"
-            />
+            <div className="relative flex items-center">
+              <Input
+                ref={receiverPhoneInputRef}
+                value={receiverPhone}
+                onChange={(e) => {
+                  hasUserEditedRef.current = true;
+                  setReceiverPhone(e.target.value);
+                }}
+                placeholder="e.g. 069696397"
+                className="font-mono text-base font-bold text-foreground tracking-wider h-10 bg-background pr-20"
+              />
+              <button
+                type="button"
+                onClick={() => pasteToField(setReceiverPhone, "Recipient Phone", extractPhone)}
+                className="absolute right-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95"
+                title="Paste recipient phone number from clipboard"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5" />
+                <span>Paste</span>
+              </button>
+            </div>
             {!receiverPhone && (
               <p className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
                 <Info className="w-3 h-3 shrink-0" /> Enter recipient phone to appear in big font on label
@@ -1483,15 +1578,26 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
               </Label>
               <span className="text-[10px] text-muted-foreground">Quick select or type</span>
             </div>
-            <Input
-              value={city}
-              onChange={(e) => {
-                hasUserEditedRef.current = true;
-                setCity(e.target.value);
-              }}
-              placeholder="e.g. Phnom Penh, Sihanoukville, Siem Reap..."
-              className="font-semibold text-sm h-9"
-            />
+            <div className="relative flex items-center">
+              <Input
+                value={city}
+                onChange={(e) => {
+                  hasUserEditedRef.current = true;
+                  setCity(e.target.value);
+                }}
+                placeholder="e.g. Phnom Penh, Sihanoukville, Siem Reap..."
+                className="font-semibold text-sm h-9 pr-18"
+              />
+              <button
+                type="button"
+                onClick={() => pasteToField(setCity, "Province / City")}
+                className="absolute right-1 px-2 py-1 rounded-md text-[11px] font-medium bg-muted hover:bg-muted/80 text-foreground flex items-center gap-1 transition-all cursor-pointer border border-border/50 active:scale-95"
+                title="Paste province or city from clipboard"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5 text-rose-500" />
+                <span>Paste</span>
+              </button>
+            </div>
             <div className="flex flex-wrap gap-1.5 pt-0.5">
               {POPULAR_PROVINCES.map((prov) => (
                 <button
@@ -1529,15 +1635,26 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
                 />
               </label>
             </div>
-            <Input
-              value={branch}
-              onChange={(e) => {
-                hasUserEditedRef.current = true;
-                setBranch(e.target.value);
-              }}
-              placeholder="e.g. Khan Toul Kork, St 271 / ឃ្លាំងឯករាជ្យ / ផ្សារលើ..."
-              className="font-medium text-sm h-9"
-            />
+            <div className="relative flex items-center">
+              <Input
+                value={branch}
+                onChange={(e) => {
+                  hasUserEditedRef.current = true;
+                  setBranch(e.target.value);
+                }}
+                placeholder="e.g. Khan Toul Kork, St 271 / ឃ្លាំងឯករាជ្យ / ផ្សារលើ..."
+                className="font-medium text-sm h-9 pr-18"
+              />
+              <button
+                type="button"
+                onClick={() => pasteToField(setBranch, "Branch / Street Address")}
+                className="absolute right-1 px-2 py-1 rounded-md text-[11px] font-medium bg-muted hover:bg-muted/80 text-foreground flex items-center gap-1 transition-all cursor-pointer border border-border/50 active:scale-95"
+                title="Paste branch or street address from clipboard"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5 text-blue-500" />
+                <span>Paste</span>
+              </button>
+            </div>
           </div>
 
           {/* Courier Service */}
@@ -1580,15 +1697,26 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
                   COD / Collect on Delivery (ប្រមូលប្រាក់)
                 </Label>
                 {showCod && (
-                  <Input
-                    value={codAmount}
-                    onChange={(e) => {
-                      hasUserEditedRef.current = true;
-                      setCodAmount(e.target.value);
-                    }}
-                    placeholder="e.g. $35.00"
-                    className="h-8 text-xs font-mono font-bold mt-1.5 w-36"
-                  />
+                  <div className="relative flex items-center mt-1.5 w-48">
+                    <Input
+                      value={codAmount}
+                      onChange={(e) => {
+                        hasUserEditedRef.current = true;
+                        setCodAmount(e.target.value);
+                      }}
+                      placeholder="e.g. $35.00"
+                      className="h-8 text-xs font-mono font-bold pr-16"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => pasteToField(setCodAmount, "COD Amount", extractCod)}
+                      className="absolute right-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 flex items-center gap-1 transition-all cursor-pointer border border-emerald-500/30 active:scale-95"
+                      title="Paste COD amount from clipboard"
+                    >
+                      <ClipboardPaste className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                      <span>Paste</span>
+                    </button>
+                  </div>
                 )}
               </div>
               <Switch id="toggle-cod" checked={showCod} onCheckedChange={setShowCod} />
@@ -1602,15 +1730,26 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
                   Show Customer Name
                 </Label>
                 {showCustomerName && (
-                  <Input
-                    value={customerName}
-                    onChange={(e) => {
-                      hasUserEditedRef.current = true;
-                      setCustomerName(e.target.value);
-                    }}
-                    placeholder="Customer full name"
-                    className="h-8 text-xs mt-1.5 w-48"
-                  />
+                  <div className="relative flex items-center mt-1.5 w-56">
+                    <Input
+                      value={customerName}
+                      onChange={(e) => {
+                        hasUserEditedRef.current = true;
+                        setCustomerName(e.target.value);
+                      }}
+                      placeholder="Customer full name"
+                      className="h-8 text-xs pr-16"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => pasteToField(setCustomerName, "Customer Name")}
+                      className="absolute right-1 px-2 py-0.5 rounded text-[11px] font-medium bg-muted hover:bg-muted/80 text-foreground flex items-center gap-1 transition-all cursor-pointer border border-border/50 active:scale-95"
+                      title="Paste customer name from clipboard"
+                    >
+                      <ClipboardPaste className="w-3 h-3 text-primary" />
+                      <span>Paste</span>
+                    </button>
+                  </div>
                 )}
               </div>
               <Switch id="toggle-name" checked={showCustomerName} onCheckedChange={setShowCustomerName} />
@@ -1624,15 +1763,26 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
                   Show Order Reference #
                 </Label>
                 {showOrderId && (
-                  <Input
-                    value={orderId}
-                    onChange={(e) => {
-                      hasUserEditedRef.current = true;
-                      setOrderId(e.target.value);
-                    }}
-                    placeholder="#ORD-..."
-                    className="h-8 text-xs font-mono mt-1.5 w-36"
-                  />
+                  <div className="relative flex items-center mt-1.5 w-48">
+                    <Input
+                      value={orderId}
+                      onChange={(e) => {
+                        hasUserEditedRef.current = true;
+                        setOrderId(e.target.value);
+                      }}
+                      placeholder="#ORD-..."
+                      className="h-8 text-xs font-mono pr-16"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => pasteToField(setOrderId, "Order Reference #")}
+                      className="absolute right-1 px-2 py-0.5 rounded text-[11px] font-medium bg-muted hover:bg-muted/80 text-foreground flex items-center gap-1 transition-all cursor-pointer border border-border/50 active:scale-95"
+                      title="Paste order reference number from clipboard"
+                    >
+                      <ClipboardPaste className="w-3 h-3 text-muted-foreground" />
+                      <span>Paste</span>
+                    </button>
+                  </div>
                 )}
               </div>
               <Switch id="toggle-orderid" checked={showOrderId} onCheckedChange={setShowOrderId} />
@@ -1646,15 +1796,26 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
                   Show Package Content / Items
                 </Label>
                 {showItems && (
-                  <Input
-                    value={itemsSummary}
-                    onChange={(e) => {
-                      hasUserEditedRef.current = true;
-                      setItemsSummary(e.target.value);
-                    }}
-                    placeholder="e.g. MacBook Pro M2, Arzopa Monitor"
-                    className="h-8 text-xs mt-1.5 w-56"
-                  />
+                  <div className="relative flex items-center mt-1.5 w-64">
+                    <Input
+                      value={itemsSummary}
+                      onChange={(e) => {
+                        hasUserEditedRef.current = true;
+                        setItemsSummary(e.target.value);
+                      }}
+                      placeholder="e.g. MacBook Pro M2, Arzopa Monitor"
+                      className="h-8 text-xs pr-16"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => pasteToField(setItemsSummary, "Package Content")}
+                      className="absolute right-1 px-2 py-0.5 rounded text-[11px] font-medium bg-muted hover:bg-muted/80 text-foreground flex items-center gap-1 transition-all cursor-pointer border border-border/50 active:scale-95"
+                      title="Paste package items from clipboard"
+                    >
+                      <ClipboardPaste className="w-3 h-3 text-primary" />
+                      <span>Paste</span>
+                    </button>
+                  </div>
                 )}
               </div>
               <Switch id="toggle-items" checked={showItems} onCheckedChange={setShowItems} />
@@ -2117,5 +2278,89 @@ export const PackageLabelA5Dialog = ({ order, initialData, open, onOpenChange }:
         </div>
       </div>
     </AdminDialog>
+
+    {quickPasteModal && (
+      <AdminDialog
+        open={Boolean(quickPasteModal)}
+        onOpenChange={(openState) => {
+          if (!openState) {
+            setQuickPasteModal(null);
+            setQuickPasteInputText("");
+          }
+        }}
+        size="md"
+        title={
+          <div className="flex items-center gap-2">
+            <ClipboardPaste className="w-4 h-4 text-primary" />
+            <span>Paste into {quickPasteModal.fieldName}</span>
+          </div>
+        }
+        description="Press Ctrl+V (or right click -> Paste) in the box below and click Apply."
+      >
+        <div className="space-y-4 py-2">
+          <Textarea
+            autoFocus
+            rows={4}
+            value={quickPasteInputText}
+            onChange={(e) => setQuickPasteInputText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (quickPasteInputText.trim()) {
+                  hasUserEditedRef.current = true;
+                  const val = quickPasteModal.transform
+                    ? quickPasteModal.transform(quickPasteInputText.trim())
+                    : quickPasteInputText.trim();
+                  quickPasteModal.setter(val);
+                  toast.success(`Applied to ${quickPasteModal.fieldName}`);
+                  setQuickPasteModal(null);
+                  setQuickPasteInputText("");
+                }
+              }
+            }}
+            placeholder="Paste text here (Ctrl+V)..."
+            className="font-medium text-sm"
+          />
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-muted-foreground">Press Enter to apply</span>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setQuickPasteModal(null);
+                  setQuickPasteInputText("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="gap-1.5"
+                disabled={!quickPasteInputText.trim()}
+                onClick={() => {
+                  if (quickPasteInputText.trim()) {
+                    hasUserEditedRef.current = true;
+                    const val = quickPasteModal.transform
+                      ? quickPasteModal.transform(quickPasteInputText.trim())
+                      : quickPasteInputText.trim();
+                    quickPasteModal.setter(val);
+                    toast.success(`Applied to ${quickPasteModal.fieldName}`);
+                    setQuickPasteModal(null);
+                    setQuickPasteInputText("");
+                  }
+                }}
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Apply</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </AdminDialog>
+    )}
+    </>
   );
 };

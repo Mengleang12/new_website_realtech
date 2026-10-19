@@ -12,7 +12,13 @@ class ProductController extends Controller
         $query = Product::with(['category', 'brand']);
 
         // Check visibility
-        if (!$request->boolean('include_hidden') && !$request->get('all') && $request->get('status') !== 'all') {
+        if ($request->get('visibility') === 'hidden' || $request->get('status') === 'hidden') {
+            if (\Illuminate\Support\Facades\Schema::hasColumn('products', 'is_visible')) {
+                $query->where('is_visible', false);
+            } elseif (\Illuminate\Support\Facades\Schema::hasColumn('products', 'is_active')) {
+                $query->where('is_active', false);
+            }
+        } elseif (!$request->boolean('include_hidden') && !$request->get('all') && $request->get('status') !== 'all') {
             if (\Illuminate\Support\Facades\Schema::hasColumn('products', 'is_visible')) {
                 $query->where('is_visible', true);
             }

@@ -28,6 +28,7 @@ import {
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { appsApi, authApi, categoriesApi, brandsApi, productAttributesApi, warrantyApi, salesApi, getApiBaseUrl, setCustomApiBaseUrl, type App, type Category, type Brand, type ProductAttribute, type WarrantyOption } from "@/lib/api";
+import { setProductVisibilityOverride } from "@/lib/productVisibilityStorage";
 import { FileUpload, GalleryUpload } from "@/components/FileUpload";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { UserManagement } from "@/components/admin/UserManagement";
@@ -1485,7 +1486,8 @@ const AppsTab = ({ onNavigateTab }: { onNavigateTab?: (tab: string) => void }) =
     setTogglingVisibilityId(app.id);
     try {
       const res = await salesApi.toggleProductVisibility(app.id);
-      const newVisible = res.is_visible;
+      const newVisible = Boolean(res.is_visible);
+      setProductVisibilityOverride(app.id, newVisible);
       toast.success(res.message || (newVisible ? "Product is now visible in store" : "Product is now hidden from store"));
       setApps(prev => prev.map(a => a.id === app.id ? { ...a, is_visible: newVisible, is_active: newVisible } : a));
     } catch (err: any) {
